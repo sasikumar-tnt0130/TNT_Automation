@@ -1,0 +1,18 @@
+{
+  "dev": {
+    "property_name": "",
+    "notes": "QA automation test - retire lead"
+  },
+  "uat": {
+    "property_name": "",
+    "notes": "QA automation test - retire lead"
+  },
+  "uat_storoutlet": {
+    "property_name": "Bellflower",
+    "notes": "QA automation test - retire lead"
+  },
+  "stage": {
+    "property_name": "Hamilton County",
+    "notes": "QA automation test - retire lead"
+  }
+}

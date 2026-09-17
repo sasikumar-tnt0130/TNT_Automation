@@ -1,0 +1,22 @@
+{
+  "dev": {
+    "property_name": "",
+    "lead_initiated": "Call Center",
+    "lead_source": "Referral"
+  },
+  "uat": {
+    "property_name": "",
+    "lead_initiated": "Call Center",
+    "lead_source": "Referral"
+  },
+  "uat_storoutlet": {
+    "property_name": "Bellflower",
+    "lead_initiated": "Call Center",
+    "lead_source": "Referral"
+  },
+  "stage": {
+    "property_name": "Hamilton County",
+    "lead_initiated": "Call Center",
+    "lead_source": "Referral"
+  }
+}

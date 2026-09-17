@@ -1,0 +1,14 @@
+{
+  "dev": {
+    "lead_property": ""
+  },
+  "uat": {
+    "lead_property": ""
+  },
+  "uat_storoutlet": {
+    "lead_property": "Chula Vista"
+  },
+  "stage": {
+    "lead_property": ""
+  }
+}
