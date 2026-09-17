@@ -1,40 +1,5 @@
 {
-  "dev": {
-    "property_name": "",
-    "lead_initiated": "Call Center",
-    "lead_source": "Referral",
-    "address": {
-      "street": "27751 Main St.",
-      "zip_code": "92660",
-      "state": "California",
-      "city": "Irvine"
-    },
-    "date_of_birth": "01/01/1990",
-    "driver_license": {
-      "number": "E8788105",
-      "expiry": "12/31/2033",
-      "state": "California"
-    }
-  },
-  "uat": {
-    "property_name": "",
-    "lead_initiated": "Call Center",
-    "lead_source": "Referral",
-    "address": {
-      "street": "27751 Main St.",
-      "zip_code": "92660",
-      "state": "California",
-      "city": "Irvine"
-    },
-    "date_of_birth": "01/01/1990",
-    "driver_license": {
-      "number": "E8788105",
-      "expiry": "12/31/2033",
-      "state": "California"
-    }
-  },
-  "stage": {
-    "property_name": "Honolulu",
+  "defaults": {
     "lead_initiated": "Call Center",
     "lead_source": "Referral",
     "address": {
@@ -51,21 +16,7 @@
     }
   },
   "uat_storoutlet": {
-    "property_name": "Bellflower",
-    "lead_initiated": "Call Center",
-    "lead_source": "Referral",
-    "payment_method": "cash",
-    "address": {
-      "street": "27751 Main St.",
-      "zip_code": "92660",
-      "state": "California",
-      "city": "Irvine"
-    },
-    "date_of_birth": "01/01/1990",
-    "driver_license": {
-      "number": "E8788105",
-      "expiry": "12/31/2033",
-      "state": "California"
-    }
-  }
+    "payment_method": "cash"
+  },
+  "stage": {}
 }

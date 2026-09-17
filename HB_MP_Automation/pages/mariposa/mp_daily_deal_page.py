@@ -5,6 +5,7 @@ from playwright.sync_api import Page, expect
 
 from common_utils.wrapper_methods import log_method_exceptions
 from pages.mariposa.mp_unit_search_page import MPUnitSearchPage
+from common_utils.waits import waits
 
 
 class MPDailyDealPage:
@@ -45,7 +46,7 @@ class MPDailyDealPage:
                 container.get_by_text("×", exact=True).first.click()
                 expect(notice).to_be_hidden(timeout=self.timeout)
                 return
-            self.page.wait_for_timeout(500)
+            self.page.wait_for_timeout(waits().poll_interval)
 
     @log_method_exceptions
     def open_home_daily_deal(self) -> str:
@@ -66,7 +67,7 @@ class MPDailyDealPage:
 
     @log_method_exceptions
     def assert_daily_deal_form(self) -> None:
-        with allure.step("The Daily Deal form shows its fields, reCAPTCHA and Submit"):
+        with allure.step("Verify the Daily Deal form shows its fields, reCAPTCHA and Submit"):
             for field in (
                 "select#facility-state",
                 "select#facility-city",

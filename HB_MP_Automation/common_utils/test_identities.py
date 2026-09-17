@@ -25,3 +25,15 @@ def new_additional_contact() -> dict:
         "email": f"hb-auto-alt-{suffix}@mailinator.com",
         "phone_number": f"70755501{int(suffix[2:4], 16) % 100:02d}",
     }
+
+
+def new_mp_guest() -> dict:
+    """A fresh storefront guest: unique Mailinator email and a fictional
+    (714) 555-01xx mobile (see conftest.mp_guest)."""
+    suffix = uuid.uuid4().hex[:10]
+    return {
+        "first_name": "Auto",
+        "last_name": "Tester",
+        "email": f"mp-auto-{suffix}@mailinator.com",
+        "mobile": f"(714) 555-01{int(suffix[:2], 16) % 100:02d}",
+    }

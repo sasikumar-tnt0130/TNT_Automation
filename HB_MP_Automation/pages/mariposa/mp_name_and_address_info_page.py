@@ -5,6 +5,7 @@ from playwright.sync_api import Locator, Page, TimeoutError as PlaywrightTimeout
 
 from common_utils.wrapper_methods import log_method_exceptions
 from pages.common.hb_settings_navigation import HBSettingsNavigation
+from common_utils.waits import waits
 
 
 class MPNameAndAddressInfoPage:
@@ -53,7 +54,7 @@ class MPNameAndAddressInfoPage:
             for _ in range(3):
                 self.nav.switch_app_filter_to_website()
                 try:
-                    expect(link).to_be_visible(timeout=15000)
+                    expect(link).to_be_visible(timeout=waits().long)
                     break
                 except AssertionError:
                     continue
@@ -72,7 +73,7 @@ class MPNameAndAddressInfoPage:
             # Best-effort only: not fatal if an environment never goes
             # fully idle, since the getters below poll independently too.
             try:
-                self.page.wait_for_load_state("networkidle", timeout=10000)
+                self.page.wait_for_load_state("networkidle", timeout=waits().medium)
             except PlaywrightTimeoutError:
                 pass
 
@@ -92,7 +93,7 @@ class MPNameAndAddressInfoPage:
         for _ in range(6):
             if value:
                 break
-            self.page.wait_for_timeout(500)
+            self.page.wait_for_timeout(waits().poll_interval)
             value = locator.input_value()
         return value
 
@@ -161,12 +162,13 @@ class MPNameAndAddressInfoPage:
     def save(self) -> None:
         with allure.step("Save Name and Address Info"):
             self.page.get_by_role("button", name="Save", exact=True).click()
-        # Confirmed live: the storefront (MP) can keep serving a
-        # property's previous phone number for some time after a save
-        # here, even though HB itself reflects the new value
-        # immediately on read-back - same cache layer
-        # MPFMSInitialSetupPage.set_landing_page_layout clears after its
-        # own save. Without this, a test that saves then immediately
-        # checks the storefront can see stale data and fail for a
-        # caching reason unrelated to what it's actually testing.
-        self.nav.clear_cache()
+            # Confirmed live: the storefront (MP) can keep serving a
+            # property's previous phone number for some time after a save
+            # here, even though HB itself reflects the new value
+            # immediately on read-back - same cache layer
+            # MPFMSInitialSetupPage.set_landing_page_layout clears after its
+            # own save. Without this, a test that saves then immediately
+            # checks the storefront can see stale data and fail for a
+            # caching reason unrelated to what it's actually testing.
+            self.nav.mark_website_cache_clear_pending()
+            self.nav.clear_cache()

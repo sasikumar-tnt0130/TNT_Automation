@@ -1,5 +1,6 @@
 import re
 import time
+from collections.abc import Callable
 
 import allure
 from playwright.sync_api import Page, expect
@@ -67,18 +68,28 @@ class MPUnitSearchPage:
         if cookie_dialog_accept.count() > 0 and cookie_dialog_accept.first.is_visible():
             cookie_dialog_accept.first.click()
 
-        # Mobile-only: a separate, site-native (not Termly) cookie banner
-        # - confirmed live (2026-09-08, stage, iPhone 13 emulation):
-        # ".cookie-content-wrapper.mobile-popup", fixed to the bottom,
-        # with an "Accept" control that's a <span> inside a <div> (not a
-        # real <button>) and a close icon that's an empty <span> with no
-        # text at all (the unscoped "×" match below can't catch it).
-        # Precisely scoped by class, so - unlike the generic matches
-        # below - this always runs even while a real dialog (e.g. the
-        # tier-selection modal) is open, since it can't accidentally
-        # close anything else.
+        # Termly's "Cookie Consent Manager" bar (Preferences / Decline /
+        # Accept) - confirmed live (2026-09-15, stage/Garden Grove): it
+        # covers the bottom of the tier-selection dialog, right over the
+        # tier's "Select" button, and isn't the alertdialog above. Declined
+        # like MPTwoStepReservationFormPage._dismiss_cookie_banner; the
+        # dialog has no "Decline" button, so this is safe while it's open.
+        termly_banner = self.page.get_by_text("Cookie Consent Manager", exact=False).first
+        if termly_banner.count() > 0 and termly_banner.is_visible():
+            decline = self.page.get_by_role("button", name="Decline", exact=True)
+            if decline.count() > 0 and decline.first.is_visible():
+                decline.first.click()
+
+        # Mobile-only cookie banner. Skip while a real dialog (e.g. tier
+        # modal) is open — confirmed 2026-09-17: clicking Accept under
+        # tier-section-modal-mobile times out (dialog intercepts pointer).
         mobile_cookie_popup = self.page.locator(".cookie-content-wrapper.mobile-popup")
-        if mobile_cookie_popup.count() > 0 and mobile_cookie_popup.first.is_visible():
+        dialog_open = self.page.get_by_role("dialog").count() > 0
+        if (
+            not dialog_open
+            and mobile_cookie_popup.count() > 0
+            and mobile_cookie_popup.first.is_visible()
+        ):
             mobile_accept = mobile_cookie_popup.first.locator(".okay-button-mobile")
             if mobile_accept.count() > 0 and mobile_accept.first.is_visible():
                 mobile_accept.first.click()
@@ -470,6 +481,80 @@ class MPUnitSearchPage:
                 ).first
             ).to_be_visible(timeout=self.timeout)
 
+    def _reservation_form_cta(self):
+        """Legacy Reserve This Space / Submit, or Two-Step Reserve Now."""
+        return (
+            self.page.get_by_role("button", name="Reserve This Space", exact=True)
+            .or_(self.page.get_by_role("button", name="Reserve Now", exact=True))
+            .or_(self.page.get_by_role("button", name="Submit", exact=True))
+        )
+
+    def _space_no_longer_available(self):
+        """Waitlist / hold-lost page heading (Default Select often lands here)."""
+        return self.page.get_by_role(
+            "heading", name=re.compile(r"Space No Longer Available", re.I)
+        )
+
+    def _recover_from_space_no_longer_available(self) -> bool:
+        """Default Select can open /rent_or_reserve/ with Lease Summary
+        still showing but the chosen unit already gone (walked 2026-09-16
+        stage/Garden Grove). Prefer a Suggested-spaces Select (same page)
+        before backing out to the listing for the next category unit."""
+        self._dismiss_banners()
+        space_gone = self._space_no_longer_available()
+        if not (space_gone.count() and space_gone.first.is_visible()):
+            return self._reservation_form_ready()
+
+        suggested = self.page.get_by_role(
+            "heading", name=re.compile(r"Suggested spaces", re.I)
+        )
+        if suggested.count() and suggested.first.is_visible():
+            selects = self.page.get_by_role("button", name="Select", exact=True)
+            for index in range(selects.count()):
+                button = selects.nth(index)
+                if not (button.is_visible() and button.is_enabled()):
+                    continue
+                with allure.step(
+                    f"Try Suggested spaces Select #{index + 1}"
+                ):
+                    self._dismiss_banners()
+                    button.click()
+                    try:
+                        expect(
+                            self._reservation_form_cta()
+                            .first.or_(space_gone.first)
+                            .first
+                        ).to_be_visible(timeout=min(30_000, self.timeout))
+                    except AssertionError:
+                        continue
+                    if self._reservation_form_ready():
+                        return True
+                    if not (space_gone.count() and space_gone.first.is_visible()):
+                        break
+
+        change_space = self.page.get_by_role("link", name="Change Space")
+        if change_space.count() and change_space.first.is_visible():
+            try:
+                change_space.first.click()
+                self.page.wait_for_load_state("domcontentloaded")
+                return False
+            except Exception:
+                pass
+        try:
+            self.page.go_back(wait_until="domcontentloaded")
+        except Exception:
+            self.page.reload(wait_until="domcontentloaded")
+        return False
+
+    def _reservation_form_ready(self) -> bool:
+        """True when a real reserve CTA is up and Space No Longer Available
+        is not. Lease Summary alone is not enough - the waitlist page also
+        renders Lease Summary beside the gone-space heading."""
+        if self._space_no_longer_available().count() and self._space_no_longer_available().first.is_visible():
+            return False
+        cta = self._reservation_form_cta()
+        return bool(cta.count() and cta.first.is_visible())
+
     @log_method_exceptions
     def _unit_selection_succeeded(self, select_button) -> bool:
         """Clicks select_button (retrying the click itself, not just
@@ -483,7 +568,13 @@ class MPUnitSearchPage:
         itself. Returns whether the tier dialog opened cleanly; on
         failure, dismisses whatever error surfaced (via "Back to Search"
         or the dialog's close control) so the next candidate starts from
-        a clean listing."""
+        a clean listing.
+
+        Default Landing Page Layout (walked 2026-09-16 stage/Garden Grove)
+        can skip the tier dialog entirely and navigate straight to
+        /rent_or_reserve/ - only counts as success when a Reserve CTA is
+        present, not when Lease Summary sits next to Space No Longer
+        Available (waitlist / suggested-spaces page)."""
         # Desktop and mobile render this same dialog with different
         # copy in different elements - confirmed live (2026-09-08,
         # stage): desktop's "Select the space best fitting your needs!"
@@ -500,9 +591,65 @@ class MPUnitSearchPage:
         unavailable_notice = self.page.get_by_text(
             re.compile(r"no longer available|Some error occured", re.IGNORECASE)
         )
-        self._click_until_visible(
-            select_button, tier_dialog_heading.or_(unavailable_notice).first
-        )
+        lease_summary = self.page.get_by_text("Lease Summary", exact=True)
+        space_gone = self._space_no_longer_available()
+        reserve_cta = self._reservation_form_cta()
+        try:
+            self._click_until_visible(
+                select_button,
+                tier_dialog_heading.or_(unavailable_notice)
+                .or_(lease_summary)
+                .or_(space_gone)
+                .or_(reserve_cta)
+                .first,
+            )
+        except AssertionError:
+            # Confirmed live (2026-09-15, stage/Garden Grove): the Select
+            # button can sit in its loading state for the whole minute with
+            # neither the tier dialog nor an error ever showing - treated
+            # like an unavailable unit (page reloaded, next candidate tried)
+            # rather than failing the whole case.
+            if space_gone.count() and space_gone.first.is_visible():
+                return self._recover_from_space_no_longer_available()
+            if self._reservation_form_ready():
+                return True
+            allure.attach(
+                self.page.screenshot(full_page=True),
+                name="Select stuck loading - trying the next unit",
+                attachment_type=allure.attachment_type.PNG,
+            )
+            self.page.reload(wait_until="domcontentloaded")
+            return False
+
+        # Default Select race: /rent_or_reserve/ + Lease Summary can paint
+        # before the Space No Longer Available heading - brief settle.
+        if "/rent_or_reserve/" in self.page.url or (
+            lease_summary.count() and lease_summary.first.is_visible()
+        ):
+            self.page.wait_for_timeout(750)
+            if space_gone.count() and space_gone.first.is_visible():
+                return self._recover_from_space_no_longer_available()
+            if self._reservation_form_ready():
+                return True
+            try:
+                expect(reserve_cta.first).to_be_visible(
+                    timeout=min(15_000, self.timeout)
+                )
+            except AssertionError:
+                pass
+            if self._reservation_form_ready():
+                return True
+            if space_gone.count() and space_gone.first.is_visible():
+                return self._recover_from_space_no_longer_available()
+            try:
+                self.page.go_back(wait_until="domcontentloaded")
+            except Exception:
+                self.page.reload(wait_until="domcontentloaded")
+            return False
+
+        if space_gone.count() and space_gone.first.is_visible():
+            return self._recover_from_space_no_longer_available()
+
         if tier_dialog_heading.is_visible():
             # User request (2026-09-13): skip units whose tier dialog warns
             # of low stock - "Only 1 left - Rent soon!" / "Only 5 left -
@@ -518,7 +665,8 @@ class MPUnitSearchPage:
             )
             if getattr(self, "_skip_low_stock_units", False) and low_stock_warning.is_visible():
                 with allure.step(
-                    f"Skip low-stock unit ({low_stock_warning.inner_text().strip()}) - try the next one"
+                    f"Skip low-stock unit "
+                    f"({low_stock_warning.inner_text().strip()}); try next"
                 ):
                     self._tier_dialog_close().click()
                     expect(tier_dialog_heading.first).to_be_hidden(timeout=self.timeout)
@@ -611,23 +759,58 @@ class MPUnitSearchPage:
 
     @log_method_exceptions
     def _select_available_unit_in_default_view_category(self, accordion_button) -> bool:
-        """"Default" (the third Landing Page Layout value, confirmed live
-        2026-09-08 on Hawaii/20220602): structurally an accordion like
-        Grid View - the same "card-header" -> card -> panel nesting, one
-        level up from the toggle for its unit-listing scope - but the
-        toggle's accessible name is overridden by an explicit
-        aria-label (e.g. "X-Small - best price $44"), not the "Click
-        this arrow to collapse this accordion tab ... See what fits"
-        text Grid View's toggle exposes, and each unit's action control
-        is an "a.check.btn" link, not a <button> - "Call"/"Text"/"Join
-        Waitlist" confirmed live for sold-out units, but no unit was
-        available online on the one live Default-layout property found
-        to confirm the exact available-state text/href against, so any
-        link whose text isn't one of those three known not-available
-        labels is tried as the "available" action here.
-        Returns whether one was found and clicked."""
+        """Default Landing Page Layout.
+
+        Confirmed live 2026-09-08 (Hawaii): accordion like Grid View, but
+        the toggle's accessible name is an aria-label such as
+        \"X-Small - best price $44\" (not Grid's \"Click this arrow...\"),
+        and sold-out units used \"a.check.btn\" links labeled Call / Text /
+        Join Waitlist.
+
+        Confirmed live 2026-09-16 stage/Garden Grove: available units under
+        Default expose a plain enabled button named exactly \"Select\" (not
+        Grid/List's \"Select ... unit\"), with \"$20 Admin Fee...\" under it.
+        Expand the category when collapsed, try those Select buttons first,
+        then fall back to any non-Call/Text/Join-Waitlist a.check.btn.
+        """
+        expanded = accordion_button.get_attribute("aria-expanded")
+        if expanded == "false":
+            accordion_button.click()
+            self.page.wait_for_timeout(500)
+        panel_id = accordion_button.get_attribute("aria-controls")
         category_wrapper = accordion_button.locator("xpath=../..")
-        action_links = category_wrapper.locator("a.check.btn")
+        # Prefer the accordion panel named by aria-controls when present -
+        # Default's unit cards (plain "Select" buttons) live there
+        # (walked 2026-09-16 stage/Garden Grove).
+        scope = (
+            self.page.locator(f"[id='{panel_id}']")
+            if panel_id
+            else category_wrapper
+        )
+        if scope.count() == 0:
+            scope = category_wrapper
+        select_buttons = scope.get_by_role(
+            "button", name=re.compile(r"Select For Price Details", re.I)
+        ).or_(
+            scope.get_by_role(
+                "button", name=re.compile(r"^Select .+ unit", re.I)
+            )
+        ).or_(
+            # Default (2026-09-16 Garden Grove): class base-button btn;
+            # accessible name sometimes omits "Select" for get_by_role.
+            scope.locator("button.base-button.btn").filter(
+                has_text=re.compile(r"Select", re.I)
+            )
+        )
+        for index in range(select_buttons.count()):
+            button = select_buttons.nth(index)
+            if button.is_enabled() and button.is_visible():
+                self._dismiss_banners()
+                if self._unit_selection_succeeded(button):
+                    return True
+        action_links = scope.locator("a.check.btn").or_(
+            category_wrapper.locator("a.check.btn")
+        )
         not_available_labels = {"Call", "Text", "Join Waitlist"}
         for index in range(action_links.count()):
             link = action_links.nth(index)
@@ -640,7 +823,10 @@ class MPUnitSearchPage:
 
     @log_method_exceptions
     def select_unit(
-        self, unit_type: str | None = None, protection_plan: str | None = None
+        self,
+        unit_type: str | None = None,
+        protection_plan: str | None = None,
+        on_value_tier_dialog: Callable[[Page], None] | None = None,
     ) -> tuple[str, str]:
         """Returns `(landing_page_layout, value_tier_layout)` - which of
         each pair of live layout variants (see below) actually rendered,
@@ -648,13 +834,17 @@ class MPUnitSearchPage:
         Tier Layout beforehand can assert the storefront really used it,
         without needing to duplicate this method's own detection logic.
 
+        Optional `on_value_tier_dialog` runs once the Value Tier dialog is
+        visible (Grid or List) and before a protection plan is chosen -
+        layout combination tests use it to screenshot that step.
+
         The facility landing page renders under one of three live,
         HB-configurable Landing Page Layout values (see
         assert_unit_size_sections_listed): "List View" (chip-per-size
         categories, ".size-wrapper"), "Grid View" (accordion-per-category
         with "Select ... unit" buttons, every unit listed inline), or
-        "Default" (also accordion-per-category, but with "a.check.btn"
-        links instead of buttons - see
+        "Default" (accordion-per-category with price aria-labels and
+        plain "Select" buttons / a.check.btn links - see
         _select_available_unit_in_default_view_category). Which specific
         size - and even which store type (Small/Medium/Large/X-Large/
         Parking/Commercial) - actually supports online rental is decided
@@ -799,6 +989,31 @@ class MPUnitSearchPage:
             else "Select protection plan"
         )
         with allure.step(tier_step_label):
+            # Default Landing Page Layout can skip the Value Tier dialog
+            # and land on /rent_or_reserve/ with Lease Summary already
+            # showing the unit's tier (walked 2026-09-16 stage/Garden Grove).
+            # Require a Reserve CTA - the waitlist page also shows Lease
+            # Summary beside "Space No Longer Available".
+            space_gone = self._space_no_longer_available()
+            if space_gone.count() and space_gone.first.is_visible():
+                if not self._recover_from_space_no_longer_available():
+                    raise AssertionError(
+                        "Storefront showed Space No Longer Available after unit "
+                        "selection - no live inventory left to open a reservation"
+                    )
+            if self._reservation_form_ready() and self.page.get_by_role("dialog").count() == 0:
+                return landing_page_layout, "n/a"
+            if "/rent_or_reserve/" in self.page.url and self.page.get_by_role("dialog").count() == 0:
+                # Form may still be painting after a successful Select.
+                try:
+                    expect(self._reservation_form_cta().first).to_be_visible(
+                        timeout=min(15_000, self.timeout)
+                    )
+                except AssertionError:
+                    pass
+                if self._reservation_form_ready():
+                    return landing_page_layout, "n/a"
+
             # The tier-selection dialog renders under one of two live,
             # HB-configurable layouts (Settings > Website > FMS Initial
             # Setup > Value Tier Layout - a separate setting from Landing
@@ -813,7 +1028,17 @@ class MPUnitSearchPage:
             # assuming one, the same way select_unit above handles both
             # Landing Page Layout variants.
             dialog = self.page.get_by_role("dialog")
+            expect(dialog).to_be_visible(timeout=self.timeout)
             tier_cards = dialog.locator(".tier-card-wrap:visible")
+            # Screenshot / inspect while the dialog is still open - before
+            # choosing a plan dismisses it into the reservation form.
+            if on_value_tier_dialog is not None:
+                expect(
+                    tier_cards.first.or_(
+                        dialog.get_by_role("button", name="Select", exact=True)
+                    ).first
+                ).to_be_visible(timeout=self.timeout)
+                on_value_tier_dialog(self.page)
             if tier_cards.count() > 0:
                 # Grid View: scoped to the matching tier's own card, same
                 # as unit selection above is scoped to its own category

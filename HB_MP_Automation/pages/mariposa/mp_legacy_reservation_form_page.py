@@ -19,6 +19,7 @@ from pages.mariposa.mp_rental_payment_form import (
     set_autopay,
     tick_agreement,
 )
+from common_utils.waits import waits
 
 # The rental application's "Additional Information" yes/no questions - the
 # vehicle one has no default answer (confirmed live 2026-09-14).
@@ -73,10 +74,15 @@ class MPLegacyReservationFormPage:
             cookie_dialog_accept.first.click()
 
         # Mobile-only site-native cookie banner - see
-        # MPUnitSearchPage._dismiss_banners for details. Scoped by class, so
-        # runs unconditionally even while a real dialog is open.
+        # MPUnitSearchPage._dismiss_banners. Skip while a real dialog is
+        # open (2026-09-17: Accept under tier-section-modal-mobile times out).
         mobile_cookie_popup = self.page.locator(".cookie-content-wrapper.mobile-popup")
-        if mobile_cookie_popup.count() > 0 and mobile_cookie_popup.first.is_visible():
+        dialog_open = self.page.get_by_role("dialog").count() > 0
+        if (
+            not dialog_open
+            and mobile_cookie_popup.count() > 0
+            and mobile_cookie_popup.first.is_visible()
+        ):
             mobile_accept = mobile_cookie_popup.first.locator(".okay-button-mobile")
             if mobile_accept.count() > 0 and mobile_accept.first.is_visible():
                 mobile_accept.first.click()
@@ -87,7 +93,7 @@ class MPLegacyReservationFormPage:
         # MPUnitSearchPage._dismiss_banners for why (confirmed live,
         # 2026-09-08: this exact class of unscoped text match closed the
         # tier-selection dialog there instead of a banner).
-        if self.page.get_by_role("dialog").count() == 0:
+        if not dialog_open:
             cookie_accept = self.page.get_by_text("Accept", exact=True)
             if cookie_accept.count() > 0 and cookie_accept.first.is_visible():
                 cookie_accept.first.click()
@@ -117,57 +123,70 @@ class MPLegacyReservationFormPage:
             self._dismiss_banners()
 
     @log_method_exceptions
-    def select_move_in_date(self, days_from_today: int = 1) -> None:
-        """The "Reserve This Space" move-in date field defaults to
-        today and opens a calendar picker rather than accepting free
-        text - selects a future date (tomorrow by default) instead of
-        leaving it on today. Doesn't handle the target date falling in
-        a different calendar month than the one the picker opens to
-        (not needed for a same-month offset like "tomorrow")."""
+    def select_move_in_date(self, days_from_today: int = 1) -> date:
+        """Pick a future move-in date on the Reserve This Space calendar.
+        Navigates to later months when the target is past the open month."""
         with allure.step(f"Select move-in date: {days_from_today} day(s) from today"):
-            # The form's "Submit" variant (seen once, 2026-09-14, mobile) has a
-            # plain textbox "date" ("Move-in date (MM/DD/YYYY) *"), no picker.
+            target_date = date.today() + timedelta(days=max(days_from_today, 1))
             variant_date = self.page.get_by_role("textbox", name="date", exact=True)
             if variant_date.count() > 0 and variant_date.first.is_visible():
-                target_date = date.today() + timedelta(days=days_from_today)
                 variant_date.first.fill(target_date.strftime("%m/%d/%Y"))
                 variant_date.first.press("Tab")
-                return
-            # This page can render two "move in date" fields at once -
-            # one on the "Rent Online Today" section above, one on
-            # "Reserve This Space" below it - both sharing this same
-            # accessible name (confirmed live, 2026-09-08, stage). The
-            # Reserve This Space one is always the second/last in DOM
-            # order.
+                return target_date
             move_in_date = self.page.get_by_role(
                 "textbox", name=re.compile(r"move.?in date", re.IGNORECASE)
             ).last
-            # A floating field label (and, near the top of the
-            # viewport, the sticky nav header) can sit directly over
-            # this field's click point once it has a value - force
-            # bypasses that overlap instead of waiting out an
-            # actionability check that never clears.
             move_in_date.click(force=True)
-
-            target_date = date.today() + timedelta(days=days_from_today)
-            # Each calendar day has its own accessible label ("Tuesday,
-            # September 1,") on the date cell itself. Trailing comma
-            # matters: e.g. Sept 1 and Sept 15, 2026 are both Tuesdays,
-            # so "September 1" alone is a substring of "September 15" -
-            # "September 1," is not.
-            target_label = (
-                target_date.strftime("%A, %B ") + str(target_date.day) + ","
-            )
-            target_cell = self.page.get_by_label(target_label, exact=False).last
-            expect(target_cell).to_be_visible(timeout=self.timeout)
-            target_cell.click()
-            # The modal's own close animation/network round-trip isn't
-            # instant - leaving it open intercepts every later click on
-            # this page (including the eventual "Reserve This Space"
-            # submit) until it actually finishes closing.
+            self._click_calendar_day(target_date)
             expect(self.page.locator("#calendar_modal")).to_be_hidden(
                 timeout=self.timeout
             )
+            return target_date
+
+    def _click_calendar_day(self, target_date: date) -> None:
+        """Click the day cell; advance the month if the cell isn't visible yet.
+
+        Confirmed live (2026-09-16, stage/Garden Grove): V-Calendar days outside
+        the advance window stay visible but gray (`vc-text-gray-400`) and a
+        click does not close #calendar_modal or change the field. The modal
+        copy is "Reservations can only be done up to N days in advance" with
+        selectable days today..today+(N-1). Reject grayed cells instead of
+        waiting for to_be_hidden.
+        """
+        target_label = target_date.strftime("%A, %B ") + str(target_date.day) + ","
+        calendar = self.page.locator("#calendar_modal")
+        expect(calendar).to_be_visible(timeout=self.timeout)
+        for _ in range(14):
+            cell = self.page.get_by_label(target_label, exact=False).last
+            try:
+                if cell.count() > 0 and cell.is_visible():
+                    classes = cell.get_attribute("class") or ""
+                    if "vc-text-gray-400" in classes:
+                        raise AssertionError(
+                            f"Calendar day {target_label!r} is outside the "
+                            f"advance-reservation window (grayed out). "
+                            f"Modal: {calendar.inner_text()[:200]!r}"
+                        )
+                    cell.click()
+                    return
+            except AssertionError:
+                raise
+            except Exception:
+                pass
+            next_btn = calendar.locator(
+                ".flatpickr-next-month, .datepicker-next, .next-month, "
+                "[aria-label*='Next' i], .icon-arrow-right, .icon-right"
+            ).first
+            if next_btn.count() == 0 or not next_btn.is_visible():
+                next_btn = calendar.get_by_role(
+                    "button", name=re.compile(r"next|›|»", re.I)
+                ).first
+            if next_btn.count() == 0:
+                break
+            next_btn.click()
+        raise AssertionError(
+            f"Calendar day {target_label!r} not found in #calendar_modal"
+        )
 
     @log_method_exceptions
     def reserve_unit(
@@ -178,7 +197,8 @@ class MPLegacyReservationFormPage:
         last_name: str,
         renting_as_business: bool = False,
         business_name: str | None = None,
-    ) -> None:
+        days_from_today: int = 1,
+    ) -> date:
         with allure.step("Wait for the reservation form to load"):
             # The tier dialog closing (see MPUnitSearchPage.select_unit) is a
             # separate SPA transition from this form actually rendering -
@@ -192,8 +212,6 @@ class MPLegacyReservationFormPage:
             ).to_be_visible(timeout=self.timeout)
             self._dismiss_banners()
 
-        self.select_move_in_date()
-
         if renting_as_business:
             with allure.step(f"Fill business information: {business_name}"):
                 business_checkbox = self.page.get_by_role(
@@ -206,7 +224,6 @@ class MPLegacyReservationFormPage:
                         "Business checkbox not visible - hard refresh and check again"
                     ):
                         self._hard_refresh()
-                        self.select_move_in_date()
                         expect(business_checkbox).to_be_visible(timeout=self.timeout)
                 business_checkbox.check()
                 self.page.get_by_role("textbox", name="Business Name").fill(
@@ -214,6 +231,10 @@ class MPLegacyReservationFormPage:
                 )
                 self.page.get_by_role("textbox", name="Business Phone").fill(mobile)
                 self.page.get_by_role("textbox", name="Business Email").fill(email)
+
+        # After the RAB checkbox: same reset as Two-Step (2026-09-17) -
+        # picking the date before "I am renting as a business" loses it.
+        move_in_date = self.select_move_in_date(days_from_today)
 
         with allure.step("Fill and submit the reservation form"):
             self._dismiss_banners()
@@ -290,7 +311,7 @@ class MPLegacyReservationFormPage:
                         with self.page.expect_response(
                             lambda response: "/validate-phone/" in response.url
                             and digits in re.sub(r"%[0-9A-Fa-f]{2}|\D", "", response.url),
-                            timeout=10000,
+                            timeout=waits().medium,
                         ):
                             field.fill(field_value)
                     except PlaywrightTimeoutError:
@@ -332,6 +353,7 @@ class MPLegacyReservationFormPage:
 
         with allure.step("Assert reservation is confirmed"):
             expect(confirmed_heading).to_be_visible(timeout=self.timeout)
+        return move_in_date
 
     @log_method_exceptions
     def get_reservation_code(self) -> str:
@@ -391,7 +413,7 @@ class MPLegacyReservationFormPage:
         ):
             try:
                 tick()
-                expect(radio.first).to_be_checked(timeout=5000)
+                expect(radio.first).to_be_checked(timeout=waits().short)
                 return
             except Exception:
                 continue
@@ -407,7 +429,13 @@ class MPLegacyReservationFormPage:
         )
 
     @log_method_exceptions
-    def fill_rental_application(self, rental_data: dict, alternate: dict, guest: dict | None = None) -> None:
+    def fill_rental_application(
+        self,
+        rental_data: dict,
+        alternate: dict | None,
+        guest: dict | None = None,
+        extras: dict | None = None,
+    ) -> None:
         """The resumed reservation's rental application, up to payment.
         Confirmed live (2026-09-14, uat_storoutlet/Bellflower, reservation
         64W1X4): it renders about 10 s after "Rent online now" changes the
@@ -415,7 +443,22 @@ class MPLegacyReservationFormPage:
         New since the Robot suite: a required "Account Password" (the rental
         creates the online account), an alternate contact block that is
         always shown, five "Additional Information" yes/no questions, a
-        Protection Plan and Renter Identity Verification before payment."""
+        Protection Plan and Renter Identity Verification before payment.
+
+        extras (optional, walked stage/Garden Grove 2026-09-16): tick and
+        fill military / lien holder / vehicle / emergency / authorized-access
+        blocks. Keys:
+        - military: dict of military fields (ticks active_military yes)
+        - lien_holder: dict of lien holder fields
+        - emergency: dict of emergency contact fields
+        - authorized_access: dict of authorized-access contact fields
+        - vehicle_type: e.g. "Car" (ticks vehicle_confirmation yes)
+        - coverage: False to skip selecting a protection plan (default True)
+
+        alternate: contact dict, or None / {} to leave the secondary/alternate
+        contact unticked (Superlease then shows N/A - walked 2026-09-16).
+        """
+        extras = extras or {}
         with allure.step("Fill the rental application"):
             expect(self.page.locator("#idtenantemail")).to_be_visible(timeout=self.timeout * 2)
             self._dismiss_banners()
@@ -423,31 +466,271 @@ class MPLegacyReservationFormPage:
             if password.count() > 0 and password.is_visible() and not password.input_value():
                 password.fill(rental_data["account_password"])
             self._check_radio("id_notice_deliveryemail")
-            for question in ADDITIONAL_QUESTIONS:
-                if self.page.locator(f'[id^="id_{question}"]:checked').count() == 0:
-                    self._check_radio(f"id_{question}no")
-            self._fill_alternate_contact(rental_data, alternate)
-            coverage = self.page.locator('input[id^="coverageAmount-ins"]')
-            if coverage.count() > 0:
-                # The first plan offered ($2,000 on Bellflower). Its "Coverage
-                # Amount" button left the radio unticked in the walk.
-                self._check_radio(coverage.first.get_attribute("id"))
+            self._answer_additional_questions(extras)
+            if alternate:
+                self._fill_alternate_contact(rental_data, alternate)
+            elif self.page.locator('[id="id_secondary_contactno"]').count():
+                self._check_radio("id_secondary_contactno")
+            if extras.get("military"):
+                self._fill_military(extras["military"], rental_data)
+            if extras.get("lien_holder"):
+                self._fill_lien_holder(extras["lien_holder"], rental_data)
+            if extras.get("emergency"):
+                self._fill_named_contact("emergency", extras["emergency"], rental_data)
+            if extras.get("authorized_access"):
+                self._fill_named_contact(
+                    "access_authorized", extras["authorized_access"], rental_data
+                )
+            if extras.get("vehicle_type"):
+                self._fill_vehicle(extras["vehicle_type"], extras.get("vehicle"))
+            if extras.get("coverage", True):
+                coverage = self.page.locator('input[id^="coverageAmount-ins"]')
+                if coverage.count() == 0:
+                    # Some layouts defer the plan radios; scroll and retry.
+                    self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    self.page.wait_for_timeout(800)
+                if coverage.count() > 0:
+                    # The first plan offered ($2,000 on Bellflower / Garden Grove).
+                    # Its "Coverage Amount" button left the radio unticked in the walk.
+                    self._check_radio(coverage.first.get_attribute("id"))
+                    expect(coverage.first).to_be_checked(timeout=self.timeout)
             self._verify_id_later(rental_data)
             if guest is not None:
                 self._fill_business_representative(guest, rental_data)
 
     @log_method_exceptions
+    def _answer_additional_questions(self, extras: dict) -> None:
+        """Yes for each extras block present; otherwise No (default).
+        Vehicle confirmation Yes is only ticked when that question exists
+        (storage); parking spaces skip straight to Vehicle Type*."""
+        yes_for = {
+            "active_military": bool(extras.get("military")),
+            "lien_holder_confirmation": bool(extras.get("lien_holder")),
+            "vehicle_confirmation": bool(extras.get("vehicle_type")),
+            "emergency": bool(extras.get("emergency")),
+            "access_authorized": bool(extras.get("authorized_access")),
+        }
+        for question in ADDITIONAL_QUESTIONS:
+            yes_id = f"id_{question}yes"
+            no_id = f"id_{question}no"
+            if yes_for.get(question) and self.page.locator(f'[id="{yes_id}"]').count():
+                self._check_radio(yes_id)
+            elif self.page.locator(f'[id="{no_id}"]').count():
+                self._check_radio(no_id)
+
+    @log_method_exceptions
+    def _fill_military(self, military: dict, rental_data: dict) -> None:
+        """Active-duty military block (revealed after Yes). Walked live
+        2026-09-16 stage/Garden Grove: ids under idmilitary* / phonemilitary."""
+        with allure.step("Fill active military details"):
+            expect(self.page.locator("#idmilitarymilitary_identification_number")).to_be_visible(
+                timeout=self.timeout
+            )
+            self.page.locator("#idmilitarymilitary_identification_number").fill(
+                military["identification_number"]
+            )
+            self.page.locator("#idmilitarymilitary_service_members_dob").fill(military["dob"])
+            self.page.locator("#idmilitarysocial_security_number").fill(military["ssn"])
+            self.page.locator("#idmilitarymilitary_ets").fill(military["ets"])
+            self.page.locator("#idmilitarymilitary_branch").fill(military["branch"])
+            self.page.locator("#idmilitarymilitary_unit_name").fill(military["unit_name"])
+            digits = re.sub(r"\D", "", military["unit_phone"])
+            try:
+                with self.page.expect_response(
+                    lambda response: "/validate-phone/" in response.url
+                    and digits in re.sub(r"%[0-9A-Fa-f]{2}|\D", "", response.url),
+                    timeout=waits().medium,
+                ):
+                    self.page.locator("#phonemilitary").fill(
+                        f"({digits[:3]}) {digits[3:6]}-{digits[6:]}"
+                    )
+            except PlaywrightTimeoutError:
+                self.page.locator("#phonemilitary").fill(
+                    f"({digits[:3]}) {digits[3:6]}-{digits[6:]}"
+                )
+            self.page.locator("#idmilitarymilitary_unit_address1").fill(
+                military.get("address1") or rental_data["address1"]
+            )
+            if military.get("address2") or rental_data.get("address2"):
+                self.page.locator("#idmilitarymilitary_unit_address2").fill(
+                    military.get("address2") or rental_data["address2"]
+                )
+            self.page.locator("#idmilitarymilitary_unit_zip").fill(
+                military.get("zip") or rental_data["zip"]
+            )
+            select_state(
+                self.page.locator("#idmilitarymilitary_unit_state"),
+                military.get("state") or rental_data["state"],
+                military.get("state_code") or rental_data["state_code"],
+            )
+            self.page.locator("#idmilitarymilitary_unit_city").fill(
+                military.get("city") or rental_data["city"]
+            )
+            self.page.locator("#idmilitarymilitary_commanding_officer_first_name").fill(
+                military["officer_first_name"]
+            )
+            self.page.locator("#idmilitarymilitary_commanding_officer_last_name").fill(
+                military["officer_last_name"]
+            )
+
+    @log_method_exceptions
+    def _fill_lien_holder(self, lien: dict, rental_data: dict) -> None:
+        """Lien / secured interest block. Walked live 2026-09-16 stage/
+        Garden Grove: ids under idlien_holder* / phonelien_holder."""
+        with allure.step(f"Fill lien holder: {lien['first_name']} {lien['last_name']}"):
+            expect(self.page.locator("#idlien_holderfirst_name")).to_be_visible(
+                timeout=self.timeout
+            )
+            self.page.locator("#idlien_holderfirst_name").fill(lien["first_name"])
+            self.page.locator("#idlien_holderlast_name").fill(lien["last_name"])
+            self.page.locator("#idlien_holderemail").fill(lien["email"])
+            digits = re.sub(r"\D", "", lien["phone"])
+            try:
+                with self.page.expect_response(
+                    lambda response: "/validate-phone/" in response.url
+                    and digits in re.sub(r"%[0-9A-Fa-f]{2}|\D", "", response.url),
+                    timeout=waits().medium,
+                ):
+                    self.page.locator("#phonelien_holder").fill(
+                        f"({digits[:3]}) {digits[3:6]}-{digits[6:]}"
+                    )
+            except PlaywrightTimeoutError:
+                self.page.locator("#phonelien_holder").fill(
+                    f"({digits[:3]}) {digits[3:6]}-{digits[6:]}"
+                )
+            self.page.locator("#idlien_holderaddress1").fill(
+                lien.get("address1") or rental_data["address1"]
+            )
+            if lien.get("address2") or rental_data.get("address2"):
+                self.page.locator("#idlien_holderaddress2").fill(
+                    lien.get("address2") or rental_data["address2"]
+                )
+            self.page.locator("#idlien_holderzip").fill(lien.get("zip") or rental_data["zip"])
+            select_state(
+                self.page.locator("#idlien_holderstate"),
+                lien.get("state") or rental_data["state"],
+                lien.get("state_code") or rental_data["state_code"],
+            )
+            self.page.locator("#idlien_holdercity").fill(lien.get("city") or rental_data["city"])
+
+    @log_method_exceptions
+    def _fill_vehicle(self, vehicle_type: str, vehicle: dict | None = None) -> None:
+        """After vehicle_confirmation Yes: pick Vehicle Type then fill the
+        revealed Car fields. Walked live 2026-09-16 stage/Garden Grove:
+        type radio id_parking_type_fieldscar is hidden; Vin / Plate / Value /
+        Insurance / Policy appear after Car is ticked."""
+        vehicle = vehicle or {}
+        with allure.step(f"Select vehicle type: {vehicle_type}"):
+            radio_id = f"id_parking_type_fields{vehicle_type.lower()}"
+            radio = self.page.locator(f'[id="{radio_id}"]')
+            expect(radio.first).to_be_attached(timeout=self.timeout)
+            self._check_radio(radio_id)
+            expect(radio.first).to_be_checked(timeout=self.timeout)
+            vin = self.page.get_by_role("textbox", name="Vin Number *", exact=True)
+            expect(vin.first).to_be_visible(timeout=self.timeout)
+            vin.first.fill(vehicle.get("vin", "1HGBH41JXMN109186"))
+            self.page.get_by_role(
+                "textbox", name="License Plate Number *", exact=True
+            ).first.fill(vehicle.get("license_plate", "AUTO123"))
+            self.page.get_by_role(
+                "textbox", name="Approximate Value *", exact=True
+            ).first.fill(vehicle.get("approximate_value", "5000"))
+            self.page.get_by_role(
+                "textbox", name="Insurance Provider *", exact=True
+            ).first.fill(vehicle.get("insurance_provider", "State Farm"))
+            self.page.get_by_role(
+                "textbox", name="Policy Number *", exact=True
+            ).first.fill(vehicle.get("policy_number", "POL-AUTO-001"))
+            registered = self.page.locator(
+                '[id^="id_"][id*="registered"][id$="yes"], '
+                '[id^="id_"][id*="owner"][id$="yes"]'
+            )
+            # Prefer exact known pattern if present; else Yes in the registered-owner group.
+            owner_yes = self.page.get_by_role(
+                "group", name=re.compile(r"Registered owner", re.I)
+            ).get_by_role("radio", name="Yes", exact=True)
+            if owner_yes.count():
+                label_for = owner_yes.first.get_attribute("id")
+                if label_for:
+                    self._check_radio(label_for)
+                else:
+                    owner_yes.first.check(force=True)
+            elif registered.count():
+                self._check_radio(registered.first.get_attribute("id"))
+
+    @log_method_exceptions
+    def _fill_named_contact(self, prefix: str, contact: dict, rental_data: dict) -> None:
+        """Emergency / authorized-access blocks (id{prefix}* / phone{prefix}).
+        Walked live 2026-09-16 stage/Garden Grove under Super Lease: prefixes
+        emergency and access_authorized."""
+        phone_key = "phone" if "phone" in contact else "phone_number"
+        with allure.step(
+            f"Fill {prefix}: {contact['first_name']} {contact['last_name']}"
+        ):
+            first_name = self.page.locator(f"#id{prefix}first_name")
+            expect(first_name).to_be_visible(timeout=self.timeout)
+            first_name.fill(contact["first_name"])
+            self.page.locator(f"#id{prefix}last_name").fill(contact["last_name"])
+            email = self.page.locator(f"#id{prefix}email")
+            if email.count():
+                email.fill(contact["email"])
+            digits = re.sub(r"\D", "", contact[phone_key])
+            phone = self.page.locator(f"#phone{prefix}")
+            try:
+                with self.page.expect_response(
+                    lambda response: "/validate-phone/" in response.url
+                    and digits in re.sub(r"%[0-9A-Fa-f]{2}|\D", "", response.url),
+                    timeout=waits().medium,
+                ):
+                    phone.fill(f"({digits[:3]}) {digits[3:6]}-{digits[6:]}")
+            except PlaywrightTimeoutError:
+                phone.fill(f"({digits[:3]}) {digits[3:6]}-{digits[6:]}")
+            self.page.locator(f"#id{prefix}address1").fill(
+                contact.get("address1") or rental_data["address1"]
+            )
+            if contact.get("address2") or rental_data.get("address2"):
+                self.page.locator(f"#id{prefix}address2").fill(
+                    contact.get("address2") or rental_data["address2"]
+                )
+            self.page.locator(f"#id{prefix}zip").fill(
+                contact.get("zip") or rental_data["zip"]
+            )
+            select_state(
+                self.page.locator(f"#id{prefix}state"),
+                contact.get("state") or rental_data["state"],
+                contact.get("state_code") or rental_data["state_code"],
+            )
+            self.page.locator(f"#id{prefix}city").fill(
+                contact.get("city") or rental_data["city"]
+            )
+
+    @log_method_exceptions
     def _fill_alternate_contact(self, rental_data: dict, alternate: dict) -> None:
-        """Always shown and required (confirmed live 2026-09-14) - filled
-        with a fictional contact from test_identities.new_additional_contact:
-        a Mailinator email and a (707) 555-01xx number."""
+        """Secondary / alternate contact. Walked live 2026-09-16 stage/Garden
+        Grove under Super Lease: tick id_secondary_contactyes ("I would like
+        to provide a secondary contact to receive lien notices") first - without
+        it the Superlease PDF keeps the alternate block as N/A even when the
+        idalternate* fields were filled. Fictional Mailinator email and
+        (707)/(714) 555-01xx number from test_identities.new_additional_contact."""
+        if self.page.locator('[id="id_secondary_contactyes"]').count():
+            self._check_radio("id_secondary_contactyes")
+        else:
+            provide = self.page.get_by_role(
+                "radio",
+                name=re.compile(r"provide a secondary contact", re.I),
+            )
+            if provide.count():
+                provide.first.check(force=True)
         first_name = self.page.locator("#idalternatefirst_name")
-        if not first_name.is_visible():
-            return
-        digits = alternate["phone_number"]
+        expect(first_name).to_be_visible(timeout=self.timeout)
+        digits = re.sub(r"\D", "", alternate["phone_number"])
         if not re.fullmatch(r"(707|714)55501\d\d", digits):
-            raise ValueError(f"Alternate contact number {digits} isn't a fictional 555-01xx number")
-        with allure.step(f"Alternate contact: {alternate['first_name']} {alternate['last_name']}"):
+            raise ValueError(
+                f"Alternate contact number {digits} isn't a fictional 555-01xx number"
+            )
+        with allure.step(
+            f"Fill alternate contact: {alternate['first_name']} {alternate['last_name']}"
+        ):
             first_name.fill(alternate["first_name"])
             self.page.locator("#idalternatelast_name").fill(alternate["last_name"])
             self.page.locator("#idalternateemail").fill(alternate["email"])
@@ -456,18 +739,22 @@ class MPLegacyReservationFormPage:
                 with self.page.expect_response(
                     lambda response: "/validate-phone/" in response.url
                     and digits in re.sub(r"%[0-9A-Fa-f]{2}|\D", "", response.url),
-                    timeout=10000,
+                    timeout=waits().medium,
                 ):
                     self.page.locator("#phonealternate").fill(
                         f"({digits[:3]}) {digits[3:6]}-{digits[6:]}"
                     )
             except PlaywrightTimeoutError:
-                pass
+                self.page.locator("#phonealternate").fill(
+                    f"({digits[:3]}) {digits[3:6]}-{digits[6:]}"
+                )
             self.page.locator("#idalternateaddress1").fill(rental_data["address1"])
             self.page.locator("#idalternateaddress2").fill(rental_data["address2"])
             self.page.locator("#idalternatezip").fill(rental_data["zip"])
             select_state(
-                self.page.locator("#idalternatestate"), rental_data["state"], rental_data["state_code"]
+                self.page.locator("#idalternatestate"),
+                rental_data["state"],
+                rental_data["state_code"],
             )
             self.page.locator("#idalternatecity").fill(rental_data["city"])
 
@@ -478,9 +765,10 @@ class MPLegacyReservationFormPage:
         the rental. "Verify ID Later" reveals the tenant's mailing address
         and driver's licence fields, filled directly."""
         later = self.page.get_by_role("button", name=re.compile(r"Verify ID Later"))
-        if later.count() == 0 or not later.first.is_visible():
+        if later.count() == 0:
             return
         with allure.step("Verify ID later: mailing address and licence"):
+            later.first.scroll_into_view_if_needed()
             later.first.click()
             address1 = self.page.locator("#idtenant_contactaddress1")
             expect(address1).to_be_visible(timeout=self.timeout)
@@ -545,7 +833,7 @@ class MPLegacyReservationFormPage:
         the protection plan and proration change it while the form fills
         (confirmed live 2026-09-14: $177.20 before the $2,000 plan, $188.53
         on the signed lease after it)."""
-        with allure.step("Read the Lease Summary"):
+        with allure.step("Read the lease summary"):
             total_pattern = re.compile(r"Total Cost to Move-in:\s*\$([\d,]+\.\d{2})")
             readings: list[str | None] = []
             text = ""
@@ -555,7 +843,7 @@ class MPLegacyReservationFormPage:
                 readings.append(total.group(1) if total else None)
                 if readings[-1] and len(readings) >= 6 and len(set(readings[-6:])) == 1:
                     break
-                self.page.wait_for_timeout(500)
+                self.page.wait_for_timeout(waits().poll_interval)
             else:
                 raise AssertionError(f"Lease Summary total never settled: {readings[-6:]}")
             space = re.search(r"#(\S+)\s*\|", text)
@@ -593,7 +881,7 @@ class MPLegacyReservationFormPage:
         pay_now = self.page.get_by_role("button", name=re.compile(r"^Pay Now"))
         expect(sign_agreements.or_(pay_now).first).to_be_visible(timeout=self.timeout)
         if sign_agreements.first.is_visible():
-            with allure.step("Sign Agreements, then sign every document"):
+            with allure.step("Sign agreements, then sign every document"):
                 sign_agreements.first.click()
                 try:
                     expect(self.page).to_have_url(re.compile(r"/documents/"), timeout=self.timeout)
@@ -609,7 +897,7 @@ class MPLegacyReservationFormPage:
                     )
                 MPDocumentSigningPage(self.page, self.timeout).sign_all()
             return "sign_agreements"
-        with allure.step("Agree to the rental agreement and Pay Now"):
+        with allure.step("Agree to the rental agreement and pay now"):
             if self.page.locator("#clickwrap").count() > 0:
                 tick_agreement(self.page, self.timeout)
             else:

@@ -1,60 +1,28 @@
 import allure
 import pytest
 
+from common_utils.browser_sessions import hb_admin_context
 from common_utils.lease_configuration_setup import LeaseConfigurationSetup
 from common_utils.mp_legacy_reservation_setup import MPLegacyReservationSetup
-from pages.common.hb_login_page import HBLoginPage
-from pages.mariposa.mp_unit_search_page import MPUnitSearchPage
 
 
 @pytest.fixture(scope="class")
 def _legacy_flow_configured(browser, environment_config, app_config) -> None:
-    """One-time admin-side setup for every test in this class: disables
-    Two-Step Rental/Clickwrap/Super Lease and applies the configured
-    Landing Page Layout. These are server-side HB settings, not
-    per-browser-session state, so doing this once per class - on its
-    own class-scoped login/context, separate from the function-scoped
-    `page`/`hb_login_page` fixtures the reservation flow itself uses -
-    is equivalent to, and much faster than, every test repeating it."""
-    timeout = app_config.getint("browser", "timeout")
-    permissions = [
-        p.strip()
-        for p in app_config.get("browser", "permissions", fallback="").split(",")
-        if p.strip()
-    ]
-    context = browser.new_context(permissions=permissions, no_viewport=True)
-    setup_page = context.new_page()
-    setup_page.set_default_timeout(timeout)
-    # Own context for the storefront self-heal check (disable_two_step_
-    # clickwrap_and_super_lease's rental_page arg) - kept separate from
-    # the admin context above, which stays on HB admin throughout.
-    storefront_context = browser.new_context(permissions=permissions, no_viewport=True)
-    try:
-        hb_login_page = HBLoginPage(setup_page, environment_config, timeout)
-        if hb_login_page.open_login_page():
-            hb_login_page.submit_login_credentials()
-        hb_login_page.assert_login_successful()
+    """One-time admin setup for this class on a temporary HB context.
 
-        storefront_page = storefront_context.new_page()
-        storefront_page.set_default_timeout(timeout)
-        rental_page = MPUnitSearchPage(
-            storefront_page, environment_config.mp_base_url, timeout
-        )
-
+    Server-side HB settings (not per-browser-session state). Uses one
+    Chromium context only — storefront verify on the signing helper is
+    unused, so a second context is not opened.
+    """
+    with hb_admin_context(browser, environment_config, app_config) as hb_login_page:
         lease_configuration = LeaseConfigurationSetup(
             hb_login_page, environment_config, app_config
         )
-        lease_configuration.disable_two_step_clickwrap_and_super_lease(
-            rental_page=rental_page
-        )
+        lease_configuration.disable_two_step_clickwrap_and_super_lease()
         if environment_config.landing_page_layout:
             lease_configuration.set_landing_page_layout(
                 environment_config.landing_page_layout
             )
-    finally:
-        storefront_context.close()
-        context.close()
-
 
 
 @allure.feature("MP Reservation")
@@ -72,6 +40,8 @@ class TestLegacyReservation:
     # disabled here too since "Legacy Flow" means neither is active.
 
     @allure.title("Individual reservation can be completed - Desktop")
+    @pytest.mark.smoke
+    @pytest.mark.testrail("C10474")
     def test_individual_reservation_desktop(
         self, page, environment_config, app_config, mp_guest
     ) -> None:
@@ -81,6 +51,8 @@ class TestLegacyReservation:
         reservation.assert_confirmation_email(mp_guest, reservation_code)
 
     @allure.title("Individual reservation can be completed - Mobile")
+    @pytest.mark.smoke
+    @pytest.mark.testrail("C10474")
     def test_individual_reservation_mobile(
         self, mobile_page, environment_config, app_config, mp_guest, mp_property_url
     ) -> None:
@@ -92,6 +64,9 @@ class TestLegacyReservation:
         reservation.assert_confirmation_email(mp_guest, reservation_code)
 
     @allure.title("Reserve As Business reservation can be completed - Desktop")
+    @pytest.mark.smoke
+    @pytest.mark.testrail("C683633")
+    @pytest.mark.testrail("C30837")
     def test_rab_reservation_desktop(
         self, page, environment_config, app_config, mp_guest
     ) -> None:
@@ -100,6 +75,9 @@ class TestLegacyReservation:
         assert reservation_code, "Expected a non-empty reservation code"
 
     @allure.title("Reserve As Business reservation can be completed - Mobile")
+    @pytest.mark.smoke
+    @pytest.mark.testrail("C683633")
+    @pytest.mark.testrail("C30837")
     def test_rab_reservation_mobile(
         self, mobile_page, environment_config, app_config, mp_guest, mp_property_url
     ) -> None:

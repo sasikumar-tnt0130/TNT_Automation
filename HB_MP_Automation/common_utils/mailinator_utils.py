@@ -1,6 +1,8 @@
 import html
 import re
 import time
+from collections.abc import Callable
+from functools import lru_cache
 
 import requests
 
@@ -16,8 +18,22 @@ MAILINATOR_API_BASE = "https://www.mailinator.com/api/v2/domains/public"
 # every attempt on an unlucky run (confirmed live 2026-09-09 - hit
 # exactly that during a real test run) - 25 drops that to
 # 0.8**25 =~ 0.4%.
-_HTTP_RETRIES = 60
-_HTTP_RETRY_DELAY = 4
+@lru_cache(maxsize=1)
+def _http_settings() -> tuple[int, float]:
+    """(retries, delay in SECONDS for time.sleep) from config/environments.ini's
+    [email] section, read once per session. No defaults live here: the ini is
+    the one source of truth, so a missing key raises configparser's own error
+    naming it. Every config value is in milliseconds; time.sleep takes seconds,
+    so the conversion happens here, at that boundary. load_config is imported
+    inside the function so this module has no import-time dependency on
+    config."""
+    from config.config_reader import load_config
+
+    config = load_config()
+    return (
+        config.getint("email", "http_retries"),
+        config.getfloat("email", "http_retry_delay_ms") / 1000,
+    )
 
 
 def _inbox_name(email: str) -> str:
@@ -27,15 +43,16 @@ def _inbox_name(email: str) -> str:
 
 
 def _get_json(url: str) -> dict:
+    retries, retry_delay = _http_settings()
     last_error: Exception | None = None
-    for _ in range(_HTTP_RETRIES):
+    for _ in range(retries):
         try:
             response = requests.get(url, timeout=15)
             response.raise_for_status()
             return response.json()
         except (requests.HTTPError, requests.exceptions.JSONDecodeError) as error:
             last_error = error
-            time.sleep(_HTTP_RETRY_DELAY)
+            time.sleep(retry_delay)
     raise RuntimeError(f"Mailinator API request failed after retries: {url}") from last_error
 
 
@@ -75,6 +92,13 @@ def _matching_messages(email: str, subject_contains: str) -> list[dict]:
     )
 
 
+def list_message_summaries(email: str) -> list[dict]:
+    """Every message the inbox currently lists, oldest first (id, subject and
+    time) - for reporting what did arrive when an expected email didn't."""
+    data = _get_json(f"{MAILINATOR_API_BASE}/inboxes/{_inbox_name(email)}")
+    return sorted(data.get("msgs", []), key=lambda message: message.get("time", 0))
+
+
 def latest_email_time(email: str) -> int:
     """Newest message time in the inbox (ms, Mailinator's own clock), 0 if
     empty - a baseline for wait_for_email_after that doesn't depend on this
@@ -103,6 +127,36 @@ def wait_for_email_after(
     raise TimeoutError(
         f"No email matching {subject_contains!r} arrived in Mailinator inbox "
         f"'{_inbox_name(email)}' after the baseline within {timeout}s"
+    )
+
+
+def wait_for_email_where(
+    email: str,
+    subject_contains: str,
+    matches: Callable[[dict], bool] = lambda message: True,
+    after_time: int = 0,
+    timeout: float = 120,
+) -> dict:
+    """Full body of the oldest message whose subject contains
+    subject_contains, that arrived after after_time and that `matches` (given
+    the full message, its "id" included) - for a flow that sends the same
+    subject twice, like the Two-Step rental's "Rental Confirmation" after Pay
+    Now and again after Get Access. Each body is fetched once."""
+    checked: set[str] = set()
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        for summary in _matching_messages(email, subject_contains):
+            if summary["id"] in checked or summary.get("time", 0) <= after_time:
+                continue
+            checked.add(summary["id"])
+            message = _get_json(f"{MAILINATOR_API_BASE}/messages/{summary['id']}")
+            message.setdefault("id", summary["id"])
+            if matches(message):
+                return message
+        time.sleep(5)
+    raise TimeoutError(
+        f"No matching email {subject_contains!r} arrived in Mailinator inbox "
+        f"'{_inbox_name(email)}' within {timeout}s"
     )
 
 

@@ -2,6 +2,11 @@ import uuid
 
 import allure
 
+from common_utils.browser_sessions import (
+    close_context_with_videos,
+    desktop_context_options,
+    prepare_desktop_page,
+)
 from pages.common.hb_lead_management_page import HBLeadManagementPage
 from pages.common.hb_leads_grid_page import HBLeadsGridPage
 from pages.common.hb_login_page import HBLoginPage
@@ -33,9 +38,9 @@ def test_saved_report_opens_as_default_view(
     def open_leads_after_fresh_login():
         # A new browser context = a new browser; the view it opens on is the
         # login's default (a session remembers the last view picked).
-        context = browser.new_context(no_viewport=True)
+        context = browser.new_context(**desktop_context_options(app_config))
         fresh_page = context.new_page()
-        fresh_page.set_default_timeout(timeout)
+        prepare_desktop_page(fresh_page, app_config)
         fresh_login = HBLoginPage(fresh_page, environment_config, timeout)
         fresh_login.open_login_page()
         fresh_login.submit_login_credentials()
@@ -60,7 +65,7 @@ def test_saved_report_opens_as_default_view(
             with allure.step("A fresh login opens the saved report as the default view"):
                 fresh_grid.expect_current_view(report_name)
         finally:
-            context.close()
+            close_context_with_videos(context, app_config, name="fresh-login-video")
     finally:
         reports = HBReportsPage(page, timeout)
         reports.open_reports_library()
@@ -72,4 +77,6 @@ def test_saved_report_opens_as_default_view(
             fresh_grid.expect_current_view("Active Leads")
             assert report_name not in fresh_grid.view_options(), f"{report_name} still offered"
     finally:
-        context.close()
+        close_context_with_videos(
+            context, app_config, name="fresh-login-after-delete-video"
+        )

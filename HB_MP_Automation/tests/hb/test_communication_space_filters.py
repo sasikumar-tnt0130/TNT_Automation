@@ -99,7 +99,7 @@ def test_lead_communication_space_filter(hb_login_page, app_config, test_data) -
     # 13482 (the filter in a lead's communications): the first lead in the
     # Reservations view, whose filter must list "Tenant" and exactly the
     # spaces its own cards name.
-    lead_property = test_data("communication_filters").get("lead_property")
+    lead_property = test_data("communication").get("lead_property")
     if not lead_property:
         pytest.skip("No lead property configured for this environment")
     filters = _login(hb_login_page, app_config)

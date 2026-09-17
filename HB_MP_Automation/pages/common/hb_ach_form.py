@@ -1,5 +1,6 @@
 import allure
 from playwright.sync_api import Locator, Page, expect
+from common_utils.waits import waits
 
 
 def fill_ach_details(
@@ -72,9 +73,9 @@ def fill_ach_details(
             field = scope.locator(f'input[name="{field_name}"]')
             expect(field).to_be_visible(timeout=timeout)
             field.fill(fields[field_name])
-            page.wait_for_timeout(700)
+            page.wait_for_timeout(waits().poll_interval)
             page.keyboard.press("Tab")
-            page.wait_for_timeout(700)
+            page.wait_for_timeout(waits().poll_interval)
 
         def flagged_fields() -> list[str]:
             return scope.locator(".v-input.error--text input").evaluate_all(
@@ -90,5 +91,5 @@ def fill_ach_details(
         if still_flagged:
             raise AssertionError(
                 f"HB still flags these ACH fields as invalid: {still_flagged} - check the "
-                f"[payment] ach_* values in environments.ini"
+                f"[payment] ach_* values in config/secrets.ini"
             )

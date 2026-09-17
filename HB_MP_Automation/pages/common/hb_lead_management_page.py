@@ -12,6 +12,7 @@ from playwright.sync_api import (
 )
 
 from common_utils.wrapper_methods import log_method_exceptions
+from common_utils.waits import waits
 
 
 class HBLeadManagementPage:
@@ -41,13 +42,13 @@ class HBLeadManagementPage:
         if live_agent_notification.count() > 0 and live_agent_notification.first.is_visible():
             if close_notification.count() > 0 and close_notification.first.is_visible():
                 try:
-                    close_notification.first.click(timeout=5000)
+                    close_notification.first.click(timeout=waits().short)
                 except PlaywrightTimeoutError:
                     pass
 
     @log_method_exceptions
     def open_leads(self, property_name: str) -> None:
-        with allure.step(f"Open Leads for {property_name}"):
+        with allure.step(f"Open leads for {property_name}"):
             self._close_live_agent_notification()
             search_box = self.page.locator("#search-box")
             expect(search_box).to_be_visible(timeout=self.timeout)
@@ -59,7 +60,7 @@ class HBLeadManagementPage:
             # isn't guaranteed to already show the target property, so type
             # the name to filter down to it explicitly instead of hoping.
             try:
-                expect(property_cell).to_be_visible(timeout=5000)
+                expect(property_cell).to_be_visible(timeout=waits().short)
             except AssertionError:
                 # #search-box is a wrapper <div> (stage's multi-property
                 # picker: "facility-search-multiple-properties"), not the
@@ -73,7 +74,7 @@ class HBLeadManagementPage:
             # account like uat_storoutlet's selects on the cell click). The
             # row click is only sent if the picker is still open.
             try:
-                expect(property_cell).to_be_hidden(timeout=5000)
+                expect(property_cell).to_be_hidden(timeout=waits().short)
             except AssertionError:
                 property_cell.locator("xpath=ancestor::tr[1]").dispatch_event(
                     "click"
@@ -111,7 +112,7 @@ class HBLeadManagementPage:
         # "Check Rental Details And Movein" lease-period/bill-day screen
         # no longer exists).
         full_name = f"{first_name} {last_name}"
-        with allure.step(f"Search Given Lead And Open Details: {full_name}"):
+        with allure.step(f"Open lead details for {full_name}"):
             self._close_live_agent_notification()
             search_leads = self.page.get_by_role(
                 "textbox", name="Search Leads", exact=True
@@ -128,7 +129,7 @@ class HBLeadManagementPage:
             expect(name_cell).to_be_visible(timeout=self.timeout)
             name_cell.click()
 
-        with allure.step("Reserve Or Move-in"):
+        with allure.step("Reserve or move in"):
             manage_reservation = self.page.get_by_role(
                 "button", name="Manage Reservation", exact=True
             )
@@ -177,7 +178,11 @@ class HBLeadManagementPage:
 
     @log_method_exceptions
     def assert_web_reservation_lead(
-        self, email: str, reservation_code: str, reservation_date: date
+        self,
+        email: str,
+        reservation_code: str,
+        reservation_date: date,
+        business_name: str | None = None,
     ) -> None:
         """Old Robot suite's 8881 "Verify the reservation is showing as lead
         in HB PMS" + "Verify reservation date in website and in HB PMS".
@@ -208,13 +213,15 @@ class HBLeadManagementPage:
             expect(row).to_be_visible(timeout=self.timeout)
 
         with allure.step(
-            f"Lead row shows reservation {reservation_code} for {reservation_date:%b %d, %Y}"
+            f"Verify lead row shows reservation {reservation_code} for {reservation_date:%b %d, %Y}"
         ):
             expect(row).to_contain_text("New Web Reservation")
             expect(row).to_contain_text(reservation_code)
             expect(row).to_contain_text(re.compile(date_pattern))
+            if business_name:
+                expect(row).to_contain_text(business_name)
 
-        with allure.step("Lead drawer shows the reservation card and move-in date"):
+        with allure.step("Verify lead drawer shows the reservation card and move-in date"):
             if not self._open_row_overview(row):
                 raise AssertionError(f"Lead drawer didn't open for {email}")
             expect(
@@ -234,7 +241,7 @@ class HBLeadManagementPage:
         email since every storefront guest shares the name "Auto Tester".
         Starts the lead's follow-up call timer; nothing is logged or saved
         here - read and close it with HBLeadFollowUpPage."""
-        with allure.step(f"Open Lead Follow-Up via Manage Reservation: {email}, space {space_number}"):
+        with allure.step(f"Open lead follow-up via manage reservation: {email}, space {space_number}"):
             self._close_live_agent_notification()
             search_leads = self.page.get_by_role(
                 "textbox", name="Search Leads", exact=True
@@ -297,7 +304,7 @@ class HBLeadManagementPage:
         # lead to also cancel its reservation. Confirmed live 2026-09-13
         # (Bellflower): such a lead now offers "Cancel Reservation" and
         # "Manage Reservation" instead - no "Retire Lead" at all.
-        with allure.step(f"Reservation lead {email} offers Cancel Reservation, not Retire Lead"):
+        with allure.step(f"Verify reservation lead {email} offers cancel reservation, not retire lead"):
             self.open_active_lead(email)
             expect(
                 self.page.get_by_text("Cancel Reservation", exact=True).first
@@ -321,7 +328,7 @@ class HBLeadManagementPage:
 
     @log_method_exceptions
     def assert_lead_not_active(self, email: str) -> None:
-        with allure.step(f"Lead {email} is no longer in Active Leads"):
+        with allure.step(f"Verify lead {email} is no longer in active leads"):
             # Already the default view (confirmed live 2026-09-13) - only
             # switch when it isn't, so a still-open lead drawer can't sit
             # over the view selector.
@@ -372,7 +379,7 @@ class HBLeadManagementPage:
         # (Bellflower): the lead drawer's Overview tab has a "Retire Lead"
         # link opening an inline form (not a dialog) - Reason picker, Opt-Out
         # checkbox, "Notes for Retiring Lead*" and a Retire Lead button.
-        with allure.step("Retire Lead: open the form"):
+        with allure.step("Retire lead: open the form"):
             retire_link = self.page.get_by_text("Retire Lead", exact=True).first
             expect(retire_link).to_be_visible(timeout=self.timeout)
             retire_link.click()
@@ -380,7 +387,7 @@ class HBLeadManagementPage:
 
     @log_method_exceptions
     def assert_retire_form_fields(self) -> None:
-        with allure.step("Retire Lead form shows Reason, Opt-Out and Notes"):
+        with allure.step("Verify retire lead form shows reason, opt-out and notes"):
             form = self._retire_form()
             for text in (
                 "Reason",
@@ -410,7 +417,7 @@ class HBLeadManagementPage:
 
     @log_method_exceptions
     def read_retire_reasons(self) -> list[str]:
-        with allure.step("Retire Lead: read the reasons"):
+        with allure.step("Retire lead: read the reasons"):
             items = self._open_reason_menu()
             reasons = [text.strip() for text in items.all_inner_texts()]
             self.page.keyboard.press("Escape")
@@ -423,7 +430,7 @@ class HBLeadManagementPage:
         # notes is refused with "There are errors in your form, correct them
         # before continuing. The Notes field is required" and the form stays
         # open (Robot's wording was "The retire reason field is required").
-        with allure.step("Retire Lead without notes is refused"):
+        with allure.step("Verify retire lead without notes is refused"):
             notes_field = self._retire_notes_field()
             expect(notes_field).to_have_value("")
             self._retire_form().get_by_role(
@@ -442,7 +449,7 @@ class HBLeadManagementPage:
 
     @log_method_exceptions
     def retire_open_lead(self, reason: str, notes: str) -> None:
-        with allure.step(f"Retire Lead with reason: {reason}"):
+        with allure.step(f"Retire lead with reason: {reason}"):
             items = self._open_reason_menu()
             reason_item = items.filter(
                 has_text=re.compile(rf"^\s*{re.escape(reason)}\s*$")
@@ -463,7 +470,7 @@ class HBLeadManagementPage:
 
     @log_method_exceptions
     def _select_view(self, view_name: str) -> None:
-        with allure.step(f"Switch Leads view to: {view_name}"):
+        with allure.step(f"Switch leads view to: {view_name}"):
             # The combobox div's own text is just the dropdown-arrow icon
             # ligature - the selected view name is the nested input's value
             # instead, exposed as this "Select"-named textbox.
@@ -481,7 +488,7 @@ class HBLeadManagementPage:
                 expect(option).to_be_visible(timeout=self.timeout)
                 option.click()
                 try:
-                    expect(view_selector).to_have_value(view_name, timeout=5000)
+                    expect(view_selector).to_have_value(view_name, timeout=waits().short)
                     return
                 except AssertionError:
                     if attempt == 2:
@@ -495,7 +502,7 @@ class HBLeadManagementPage:
         # cancel actions only render once Overview is the active tab.
         overview_tab = self.page.get_by_role("tab", name="Overview", exact=True)
         try:
-            expect(overview_tab).to_be_visible(timeout=10000)
+            expect(overview_tab).to_be_visible(timeout=waits().medium)
         except (PlaywrightTimeoutError, AssertionError):
             return False
         overview_tab.click()
@@ -511,7 +518,7 @@ class HBLeadManagementPage:
         loading_row = self.page.get_by_text("Loading", exact=True)
         deadline = time.monotonic() + self.timeout / 1000
         while time.monotonic() < deadline and loading_row.count() > 0:
-            self.page.wait_for_timeout(200)
+            self.page.wait_for_timeout(waits().poll_interval)
 
     @log_method_exceptions
     def _wait_for_confirm_outcome(self, success_text: str) -> bool:
@@ -534,7 +541,7 @@ class HBLeadManagementPage:
                 and already_converted_warning.first.is_visible()
             ):
                 return False
-            self.page.wait_for_timeout(200)
+            self.page.wait_for_timeout(waits().poll_interval)
         raise AssertionError(
             f"Neither {success_text!r} nor an 'already converted' warning "
             "appeared after confirming"
@@ -559,7 +566,7 @@ class HBLeadManagementPage:
         # Only present when the opened person has 2+ active leads/
         # reservations - retires every one of them in a single confirm
         # instead of looping per entry.
-        with allure.step("Retire All Leads: select every active lead"):
+        with allure.step("Retire all leads: select every active lead"):
             trigger_button.click()
             # Same as _select_view: the combobox div itself has no
             # accessible name - "Select leads" is the nested textbox's.
@@ -577,7 +584,7 @@ class HBLeadManagementPage:
             # Notes field beneath it becomes reachable.
             self.page.get_by_text("Reason", exact=True).click()
 
-        with allure.step("Retire All Leads: confirm with reason"):
+        with allure.step("Retire all leads: confirm with reason"):
             notes_field = self.page.get_by_role(
                 "textbox", name="Why are you retiring these leads?", exact=True
             )
@@ -599,11 +606,11 @@ class HBLeadManagementPage:
             "textbox", name="Why are you retiring this lead?", exact=True
         )
         try:
-            expect(notes_field).to_be_visible(timeout=10000)
+            expect(notes_field).to_be_visible(timeout=waits().medium)
         except (PlaywrightTimeoutError, AssertionError):
             return False
 
-        with allure.step("Retire Lead: confirm with reason"):
+        with allure.step("Retire lead: confirm with reason"):
             notes_field.fill(notes)
             self.page.get_by_role("button", name="Retire Lead", exact=True).click()
             return self._wait_for_confirm_outcome("Lead retired successfully")
@@ -626,7 +633,7 @@ class HBLeadManagementPage:
             "button", name="Retire All Leads", exact=True
         ).first
         try:
-            expect(retire_all_button).to_be_visible(timeout=5000)
+            expect(retire_all_button).to_be_visible(timeout=waits().short)
             has_bulk_action = True
         except (PlaywrightTimeoutError, AssertionError):
             has_bulk_action = False
@@ -640,7 +647,7 @@ class HBLeadManagementPage:
         # through to the not-found skip below.
         retire_link = self.page.get_by_text("Retire Lead", exact=True).first
         try:
-            expect(retire_link).to_be_visible(timeout=10000)
+            expect(retire_link).to_be_visible(timeout=waits().medium)
         except (PlaywrightTimeoutError, AssertionError):
             return False
         return self._retire_single_lead(retire_link, notes)
@@ -652,7 +659,7 @@ class HBLeadManagementPage:
 
         cancel_link = self.page.get_by_text("Cancel Reservation", exact=True).first
         try:
-            expect(cancel_link).to_be_visible(timeout=10000)
+            expect(cancel_link).to_be_visible(timeout=waits().medium)
         except (PlaywrightTimeoutError, AssertionError):
             return False
         cancel_link.click()
@@ -661,11 +668,11 @@ class HBLeadManagementPage:
             "textbox", name="Why are you cancelling this reservation?", exact=True
         )
         try:
-            expect(notes_field).to_be_visible(timeout=10000)
+            expect(notes_field).to_be_visible(timeout=waits().medium)
         except (PlaywrightTimeoutError, AssertionError):
             return False
 
-        with allure.step("Cancel Reservation: confirm with reason"):
+        with allure.step("Cancel reservation: confirm with reason"):
             notes_field.fill(notes)
             self.page.get_by_role(
                 "button", name="Cancel Reservation", exact=True
@@ -685,7 +692,7 @@ class HBLeadManagementPage:
 
         while True:
             try:
-                expect(rows.first).to_be_visible(timeout=5000)
+                expect(rows.first).to_be_visible(timeout=waits().short)
             except (PlaywrightTimeoutError, AssertionError):
                 break
 

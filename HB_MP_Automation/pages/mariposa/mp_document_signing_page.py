@@ -3,6 +3,7 @@ from playwright.sync_api import Locator, Page, expect
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from common_utils.wrapper_methods import log_method_exceptions
+from common_utils.waits import waits
 
 
 class MPDocumentSigningPage:
@@ -48,7 +49,7 @@ class MPDocumentSigningPage:
         if unsigned_field.count() == 0:
             return False
         try:
-            unsigned_field.first.click(trial=True, timeout=2000)
+            unsigned_field.first.click(trial=True, timeout=waits().tiny)
         except PlaywrightTimeoutError:
             return False
         field_id = unsigned_field.first.get_attribute("data-id")
@@ -67,19 +68,21 @@ class MPDocumentSigningPage:
                 for attempt in range(5):
                     self._click_within(accept_button)
                     try:
-                        expect(signature_input).to_be_hidden(timeout=4000)
+                        expect(signature_input).to_be_hidden(timeout=waits().tiny)
                         break
                     except AssertionError:
                         if attempt == 4:
                             raise
                 expect(signed_field).to_have_count(1, timeout=self.timeout)
                 return True
-            self.page.wait_for_timeout(250)
+            self.page.wait_for_timeout(waits().poll_interval)
         return False
 
     @log_method_exceptions
-    def sign_all(self, initials: str = "AT") -> int:
-        """Signs every document; returns how many fields were signed."""
+    def sign_all(self, initials: str = "AT", *, require_documents_url: bool = True) -> int:
+        """Signs every document; returns how many fields were signed.
+        require_documents_url=False allows the same widget when it opens on
+        My Account Change of Address (walked 2026-09-16 - no /documents/ URL)."""
         with allure.step("Sign every document"):
             frame = self._frame()
             expect(
@@ -99,7 +102,7 @@ class MPDocumentSigningPage:
             signed = 0
             idle_checks = 0
             for _ in range(300):
-                if not self._on_documents_page():
+                if require_documents_url and not self._on_documents_page():
                     break
                 if self._sign_next_field(initials):
                     signed += 1
@@ -118,7 +121,7 @@ class MPDocumentSigningPage:
                 if idle_checks >= 60:
                     break
                 self.page.wait_for_timeout(1000)
-            if self._on_documents_page():
+            if require_documents_url and self._on_documents_page():
                 raise AssertionError(
                     f"Still on Sign Documents after signing {signed} field(s) - "
                     "the signing widget stopped with documents left"

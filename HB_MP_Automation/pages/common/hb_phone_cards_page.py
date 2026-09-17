@@ -32,7 +32,7 @@ class HBPhoneCardsPage(HBEmailCardsPage):
     def assert_call_card(self, token: str, direction: str, note: str) -> None:
         kind, icon = CALLS[direction]
         other = next(other_icon for name, (_, other_icon) in CALLS.items() if name != direction)
-        with allure.step(f"The {direction.lower()} call {token}: label, icon, time, note, manager"):
+        with allure.step(f"Verify {direction.lower()} call {token}: label, icon, time, note, manager"):
             card = self._cards().filter(has_text=token).first
             expect(card).to_be_visible(timeout=self.timeout)
             expect(card).to_contain_text(kind, timeout=self.timeout)
@@ -50,7 +50,7 @@ class HBPhoneCardsPage(HBEmailCardsPage):
         the latest by time: a call In and Out logged in the same minute was
         listed under Outgoing as "Call (In)" (2026-09-14)."""
         kind, icon = CALLS[direction]
-        with allure.step(f"{direction} filter lists {tenant_name}"):
+        with allure.step(f"Verify {direction} filter lists {tenant_name}"):
             self.filter_direction(direction)
             try:
                 search = self._center().get_by_role("textbox", name="Search Tenant or Space")

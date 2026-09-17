@@ -147,7 +147,7 @@ def test_send_from_communication_center(hb_login_page, app_config, hb_comm_tenan
 def test_send_from_lead(hb_login_page, app_config, test_data) -> None:
     # 14801: the first lead in the Reservations view - a storefront guest
     # (Mailinator email, (714) 555-01xx phone); the sends refuse otherwise.
-    lead_property = test_data("communication_compose").get("lead_property")
+    lead_property = test_data("communication").get("lead_property")
     if not lead_property:
         pytest.skip("No lead property configured for this environment")
     compose = _login(hb_login_page, app_config)

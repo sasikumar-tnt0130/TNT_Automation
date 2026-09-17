@@ -10,6 +10,7 @@ from pages.common.hb_communication_compose_page import (
     HBCommunicationComposePage,
 )
 from pages.common.hb_tenant_notes_page import _exactly, _words
+from common_utils.waits import waits
 
 LIVE_AGENT = "Need to talk to a live agent?"
 ALTERNATE_CARD = re.compile(r"Email\s*\(Out\)\s*-\s*Alternate")
@@ -104,7 +105,7 @@ class HBEmailCardsPage(HBCommunicationComposePage):
         for attempt in range(3):
             icon.hover()
             try:
-                expect(tooltip).to_be_visible(timeout=5000)
+                expect(tooltip).to_be_visible(timeout=waits().short)
                 break
             except AssertionError:
                 self.page.mouse.move(0, 0)
@@ -112,7 +113,7 @@ class HBEmailCardsPage(HBCommunicationComposePage):
                     raise
         text = " ".join(tooltip.inner_text().split())
         self.page.mouse.move(0, 0)
-        self.page.wait_for_timeout(500)
+        self.page.wait_for_timeout(waits().poll_interval)
         return text
 
     @log_method_exceptions
@@ -155,7 +156,7 @@ class HBEmailCardsPage(HBCommunicationComposePage):
     @log_method_exceptions
     def assert_primary_email_card(self, token: str, subject: str, space: str) -> None:
         # Robot 14167/14168/14169/14178.
-        with allure.step(f"Email {token} to the primary contact: space, subject, time, status, no To:"):
+        with allure.step(f"Verify email {token} to the primary contact: space, subject, time, status, no To:"):
             card = self.email_card(token)
             self._expect_email_card(card, subject, space)
             expect(card).not_to_contain_text(ALTERNATE_CARD)
@@ -165,7 +166,7 @@ class HBEmailCardsPage(HBCommunicationComposePage):
     @log_method_exceptions
     def assert_alternate_email_card(self, token: str, subject: str, space: str, contact: dict) -> None:
         # Robot 14164, for the Alternate designation (user choice 2026-09-14).
-        with allure.step(f"Email {token} to {contact['designation']} contact {contact['name']}"):
+        with allure.step(f"Verify email {token} to {contact['designation']} contact {contact['name']}"):
             card = self.email_card(token, alternate=True)
             self._expect_email_card(card, subject, space)
             expect(card).to_contain_text(ALTERNATE_CARD)
@@ -179,7 +180,7 @@ class HBEmailCardsPage(HBCommunicationComposePage):
     @log_method_exceptions
     def assert_attachment_icon(self, token: str) -> None:
         # Robot 14174: a paperclip whose tooltip was "Has Attachment(s)".
-        with allure.step(f"Email {token} shows the attachment icon"):
+        with allure.step(f"Verify email {token} shows the attachment icon"):
             card = self.email_card(token)
             expect(card).to_be_visible(timeout=self.timeout)
             clip = card.locator("i.mdi-paperclip")
@@ -193,12 +194,12 @@ class HBEmailCardsPage(HBCommunicationComposePage):
     def assert_text_card(self, token: str, message: str, space: str) -> None:
         # Robot 14183 (today's time), 14191 (space and message), 14186 (pin
         # icon) and 14187 (a long text shows expanded).
-        with allure.step(f"Text {token}: time, space, message, pin icon, expanded"):
+        with allure.step(f"Verify text {token}: time, space, message, pin icon, expanded"):
             card = self.card(token, "text")
             expect(card).to_be_visible(timeout=self.timeout)
             expect(card).to_contain_text(SENT_TODAY)
             try:
-                expect(card).to_contain_text(re.compile(rf"Space\s+{re.escape(space)}\b"), timeout=10000)
+                expect(card).to_contain_text(re.compile(rf"Space\s+{re.escape(space)}\b"), timeout=waits().medium)
             except AssertionError as error:
                 # send_text checked the request carried the space, so a card
                 # without it is HB's saving, not the page (seen 2026-09-14).
@@ -233,7 +234,7 @@ class HBEmailCardsPage(HBCommunicationComposePage):
                 )
                 if lines > 2:
                     break
-                self.page.wait_for_timeout(500)
+                self.page.wait_for_timeout(waits().poll_interval)
             assert lines > 2, (
                 f"The text takes {lines:.1f} line(s) in this window - too short to show the"
                 " collapse icon; the test message needs to be longer"
@@ -247,7 +248,7 @@ class HBEmailCardsPage(HBCommunicationComposePage):
         # its text box clips (overflow hidden, 24px high); expanded, it shows in
         # full (confirmed live 2026-09-14). Heights depend on the window's
         # width, so the icon and the clipping are checked instead.
-        with allure.step(f"Text {token} collapses and expands again"):
+        with allure.step(f"Verify text {token} collapses and expands again"):
             card = self.card(token, "text")
             text_box = card.locator(".hb-communication-text-night-light").filter(has_text=token).first
             expect(text_box).to_have_css("overflow", "visible", timeout=self.timeout)
@@ -287,7 +288,7 @@ class HBEmailCardsPage(HBCommunicationComposePage):
     def assert_card_pinned(self, token: str, kind: str, pinned: bool) -> None:
         """The `kind` card carrying `token` is (un)pinned; pinned, it's listed
         with the pinned cards, before every unpinned one."""
-        with allure.step(f"The {kind} {token} is {'pinned on top' if pinned else 'not pinned'}"):
+        with allure.step(f"Verify the {kind} {token} is {'pinned on top' if pinned else 'not pinned'}"):
             card = self.card(token, kind)
             expect(card).to_be_visible(timeout=self.timeout)
             expect(card.locator("i.mdi-pin")).to_have_count(1 if pinned else 0, timeout=self.timeout)
@@ -321,7 +322,7 @@ class HBEmailCardsPage(HBCommunicationComposePage):
                     and (not unpinned_at or max(pinned_at) < min(unpinned_at))
                 ):
                     return
-                self.page.wait_for_timeout(500)
+                self.page.wait_for_timeout(waits().poll_interval)
             shown = [
                 ("pinned   " if card["pinned"] else "unpinned ") + card["text"][:70] for card in listed[:6]
             ]
@@ -331,7 +332,7 @@ class HBEmailCardsPage(HBCommunicationComposePage):
     def assert_left_card(self, token: str, tenant_name: str, status: str, kind: str = "email") -> None:
         # Robot 14179/14192 (the left card: To: tenant name and status) and
         # 14177/14190 (the same status as the right column's).
-        with allure.step(f"Left card: {kind} {token} To: {tenant_name}, status {status}"):
+        with allure.step(f"Verify left card: {kind} {token} To: {tenant_name}, status {status}"):
             item = self._left_items().filter(has_text=token).first
             expect(item).to_be_visible(timeout=self.timeout)
             expect(item).to_contain_text(CARD_KINDS[kind])
@@ -357,7 +358,7 @@ class HBEmailCardsPage(HBCommunicationComposePage):
     @log_method_exceptions
     def filter_direction(self, direction: str) -> None:
         """Filters the Communication Center to "Incoming" or "Outgoing"."""
-        with allure.step(f"Communication Center filter: {direction}"):
+        with allure.step(f"Set Communication Center filter: {direction}"):
             dialog = self._open_filter_dialog()
             dialog.get_by_text(direction, exact=True).click()
             apply = dialog.locator('button[name="QA-HbBottomActionBar-hb-primary-button-Apply"]')
@@ -367,11 +368,11 @@ class HBEmailCardsPage(HBCommunicationComposePage):
 
     @log_method_exceptions
     def clear_direction_filter(self) -> None:
-        with allure.step("Communication Center: Clear Filters"):
+        with allure.step("Clear Communication Center filters"):
             dialog = self._open_filter_dialog()
             dialog.get_by_text("Clear Filters", exact=True).click()
             try:
-                expect(dialog).to_be_hidden(timeout=5000)
+                expect(dialog).to_be_hidden(timeout=waits().short)
             except AssertionError:
                 dialog.locator('button[name="QA-v-card-HbIcon-mdi-close"]').click()
                 expect(dialog).to_be_hidden(timeout=self.timeout)
@@ -390,7 +391,7 @@ class HBEmailCardsPage(HBCommunicationComposePage):
             " if (node) node.scrollTop = node.scrollHeight; }"
         )
         for _ in range(20):
-            self.page.wait_for_timeout(500)
+            self.page.wait_for_timeout(waits().poll_interval)
             if items.count() > before:
                 return True
         return False
@@ -429,7 +430,7 @@ class HBEmailCardsPage(HBCommunicationComposePage):
             if (kind is None and not with_direction) or not all(
                 item["direction"] == direction for item in with_direction
             ):
-                self.page.wait_for_timeout(500)
+                self.page.wait_for_timeout(waits().poll_interval)
                 continue
             if (
                 kind is None

@@ -1,9 +1,6 @@
 {
-  "dev": {
-    "property_name": "",
+  "defaults": {
     "active_tenant_filter": "Custom Range",
-    "custom_range_start_date": "Aug 1, 2000",
-    "custom_range_end_date": "Aug 1, 2026",
     "reason": "Moved Into House",
     "tenant_filter_list": [
       "Today",
@@ -15,56 +12,21 @@
       "Year To Date",
       "Custom Range"
     ]
+  },
+  "dev": {
+    "custom_range_start_date": "Aug 1, 2000",
+    "custom_range_end_date": "Aug 1, 2026"
   },
   "uat": {
-    "property_name": "",
-    "active_tenant_filter": "Custom Range",
     "custom_range_start_date": "Aug 1, 2026",
-    "custom_range_end_date": "Aug 27, 2026",
-    "reason": "Moved Into House",
-    "tenant_filter_list": [
-      "Today",
-      "Yesterday",
-      "Last 7 Days",
-      "Last 30 Days",
-      "This Month",
-      "Last Month",
-      "Year To Date",
-      "Custom Range"
-    ]
+    "custom_range_end_date": "Aug 27, 2026"
   },
   "uat_storoutlet": {
-    "property_name": "Bellflower",
-    "active_tenant_filter": "Custom Range",
     "custom_range_start_date": "May 1, 2026",
-    "custom_range_end_date": "Aug 31, 2026",
-    "reason": "Moved Into House",
-    "tenant_filter_list": [
-      "Today",
-      "Yesterday",
-      "Last 7 Days",
-      "Last 30 Days",
-      "This Month",
-      "Last Month",
-      "Year To Date",
-      "Custom Range"
-    ]
+    "custom_range_end_date": "Aug 31, 2026"
   },
   "stage": {
-    "property_name": "Hamilton County",
-    "active_tenant_filter": "Custom Range",
     "custom_range_start_date": "Aug 1, 2024",
-    "custom_range_end_date": "Aug 1, 2026",
-    "reason": "Moved Into House",
-    "tenant_filter_list": [
-      "Today",
-      "Yesterday",
-      "Last 7 Days",
-      "Last 30 Days",
-      "This Month",
-      "Last Month",
-      "Year To Date",
-      "Custom Range"
-    ]
+    "custom_range_end_date": "Aug 1, 2026"
   }
 }

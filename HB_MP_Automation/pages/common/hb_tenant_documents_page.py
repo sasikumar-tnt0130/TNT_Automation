@@ -4,6 +4,7 @@ import allure
 from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError, expect
 
 from common_utils.wrapper_methods import log_method_exceptions
+from common_utils.waits import waits
 
 
 class HBTenantDocumentsPage:
@@ -36,13 +37,13 @@ class HBTenantDocumentsPage:
         if live_agent_notification.count() > 0 and live_agent_notification.first.is_visible():
             if close_notification.count() > 0 and close_notification.first.is_visible():
                 try:
-                    close_notification.first.click(timeout=5000)
+                    close_notification.first.click(timeout=waits().short)
                 except PlaywrightTimeoutError:
                     pass
 
     @log_method_exceptions
     def open_tenants(self, property_name: str) -> None:
-        with allure.step(f"Open Tenants for {property_name}"):
+        with allure.step(f"Open tenants for {property_name}"):
             self._close_live_agent_notification()
             search_box = self.page.locator("#search-box")
             expect(search_box).to_be_visible(timeout=self.timeout)
@@ -56,7 +57,7 @@ class HBTenantDocumentsPage:
                 "cell", name=property_name, exact=True
             )
             try:
-                expect(property_cell).to_be_visible(timeout=5000)
+                expect(property_cell).to_be_visible(timeout=waits().short)
             except AssertionError:
                 search_input.fill(property_name)
                 expect(property_cell).to_be_visible(timeout=self.timeout)
@@ -64,7 +65,7 @@ class HBTenantDocumentsPage:
             # Same multi-property picker quirk as HBLeadManagementPage.
             # open_leads: only a click on the row selects it there.
             try:
-                expect(property_cell).to_be_hidden(timeout=5000)
+                expect(property_cell).to_be_hidden(timeout=waits().short)
             except AssertionError:
                 property_cell.locator("xpath=ancestor::tr[1]").dispatch_event(
                     "click"
@@ -86,7 +87,7 @@ class HBTenantDocumentsPage:
     @log_method_exceptions
     def open_tenant_details(self, first_name: str, last_name: str) -> None:
         full_name = f"{first_name} {last_name}"
-        with allure.step(f"Search Given Tenant And Open Details: {full_name}"):
+        with allure.step(f"Open tenant details for {full_name}"):
             search_tenants = self.page.get_by_role(
                 "textbox", name="Search Tenants", exact=True
             )
@@ -109,7 +110,7 @@ class HBTenantDocumentsPage:
 
     @log_method_exceptions
     def open_documents_menu(self) -> None:
-        with allure.step("Open Side Bar On Tenant Details: Documents"):
+        with allure.step("Open documents in the tenant sidebar"):
             sidebar_toggle = self.page.locator(
                 'button[name="QA-HbHeader-HbIcon-mdi-table-actions-custom-1"]'
             )
@@ -130,7 +131,7 @@ class HBTenantDocumentsPage:
 
     @log_method_exceptions
     def upload_file(self, file_path: str) -> None:
-        with allure.step(f"Upload File: {file_path}"):
+        with allure.step(f"Upload file: {file_path}"):
             self.page.get_by_role(
                 "button", name="Upload File", exact=True
             ).click()
@@ -154,7 +155,7 @@ class HBTenantDocumentsPage:
 
     @log_method_exceptions
     def assert_file_uploaded(self, file_name: str) -> None:
-        with allure.step(f"Validate uploaded file appears: {file_name}"):
+        with allure.step(f"Verify uploaded file appears: {file_name}"):
             file_row = self.page.get_by_role(
                 "row", name=re.compile(re.escape(file_name))
             )
@@ -162,3 +163,108 @@ class HBTenantDocumentsPage:
             expect(
                 file_row.first.get_by_text("Uploaded", exact=True)
             ).to_be_visible(timeout=self.timeout)
+
+    @log_method_exceptions
+    def assert_documents_listed(self, document_names: list[str]) -> None:
+        """Generated rental documents appear in the tenant Documents panel
+        (name substring match). Walked live 2026-09-16 stage/Garden Grove:
+        Lease Agreement, Autopay Enrollment Document, Military Waiver,
+        Vehicle Addendum (when vehicle storing was ticked)."""
+        with allure.step(f"Verify documents listed: {document_names}"):
+            expect(
+                self.page.get_by_role("button", name="Upload File", exact=True)
+            ).to_be_visible(timeout=self.timeout)
+            for name in document_names:
+                row = self.page.get_by_role(
+                    "row", name=re.compile(re.escape(name), re.I)
+                )
+                expect(row.first).to_be_visible(timeout=self.timeout)
+
+    @log_method_exceptions
+    def document_row(self, document_name: str):
+        """Tenant Documents grid row whose File Name contains document_name."""
+        return self.page.get_by_role(
+            "row", name=re.compile(re.escape(document_name), re.I)
+        ).first
+
+    @log_method_exceptions
+    def open_document_pdf_text(self, document_name: str) -> str:
+        """Row kebab -> View/Print opens a CloudFront PDF in a new tab
+        (walked live 2026-09-16 stage). Fetches the PDF bytes and returns
+        extracted text via pypdf."""
+        from pypdf import PdfReader
+        from io import BytesIO
+
+        with allure.step(f"View or print document PDF: {document_name}"):
+            row = self.document_row(document_name)
+            expect(row).to_be_visible(timeout=self.timeout)
+            row.locator(".mdi-dots-vertical").first.click()
+            view = self.page.get_by_role("menuitem", name="View/Print", exact=True)
+            expect(view).to_be_visible(timeout=self.timeout)
+            with self.page.context.expect_page() as new_page_info:
+                view.click()
+            pdf_page = new_page_info.value
+            try:
+                pdf_page.wait_for_load_state("domcontentloaded")
+                # CloudFront sometimes lands on chrome-error: before the real
+                # PDF URL; wait for http(s) or fail with AssertionError so
+                # callers can soft-assert.
+                deadline = self.timeout
+                waited = 0
+                while waited < deadline and not (
+                    pdf_page.url.startswith("http://")
+                    or pdf_page.url.startswith("https://")
+                ):
+                    pdf_page.wait_for_timeout(500)
+                    waited += 500
+                if not (
+                    pdf_page.url.startswith("http://")
+                    or pdf_page.url.startswith("https://")
+                ):
+                    raise AssertionError(
+                        f"PDF tab for {document_name!r} never reached an "
+                        f"http(s) URL (got {pdf_page.url!r})"
+                    )
+                response = self.page.context.request.get(pdf_page.url)
+                if response.status != 200:
+                    raise AssertionError(
+                        f"PDF fetch for {document_name!r} returned HTTP {response.status}"
+                    )
+                body = response.body()
+                allure.attach(
+                    body[:2000],
+                    name=f"{document_name} PDF header bytes",
+                    attachment_type=allure.attachment_type.TEXT,
+                )
+                text = "".join(
+                    (page.extract_text() or "")
+                    for page in PdfReader(BytesIO(body)).pages
+                )
+                allure.attach(
+                    text[:4000],
+                    name=f"{document_name} PDF text (sample)",
+                    attachment_type=allure.attachment_type.TEXT,
+                )
+                return text
+            finally:
+                pdf_page.close()
+
+    @log_method_exceptions
+    def assert_document_pdf_contains(
+        self, document_name: str, expected_snippets: list[str]
+    ) -> str:
+        """Open the named document and assert each snippet appears in its PDF text."""
+        text = self.open_document_pdf_text(document_name)
+        lowered = text.lower()
+        missing = [
+            snippet
+            for snippet in expected_snippets
+            if snippet and snippet.lower() not in lowered
+        ]
+        if missing:
+            raise AssertionError(
+                f"{document_name!r} PDF missing {missing!r}. "
+                f"Sample: {text[:500]!r}"
+            )
+        return text
+

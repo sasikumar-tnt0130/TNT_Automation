@@ -4,6 +4,11 @@ import allure
 import pytest
 from playwright.sync_api import Browser
 
+from common_utils.browser_sessions import (
+    close_context_with_videos,
+    desktop_context_options,
+    prepare_desktop_page,
+)
 from common_utils.hb_session_tenants import (
     create_single_tenant,
     create_two_space_tenant,
@@ -18,11 +23,6 @@ from pages.common.hb_tenant_notes_page import HBTenantNotesPage
 # the end of the session.
 
 
-def _permissions(app_config) -> list[str]:
-    # Same as the root conftest's _browser_permissions.
-    return [p.strip() for p in app_config.get("browser", "permissions", fallback="").split(",") if p.strip()]
-
-
 @pytest.fixture(scope="session")
 def hb_session_setup(browser: Browser, app_config, environment_config, test_data):
     """A logged-in page of its own for creating this session's test tenants
@@ -32,9 +32,9 @@ def hb_session_setup(browser: Browser, app_config, environment_config, test_data
     if not lease_data.get("property_name"):
         pytest.skip("No Quick Launch lease property configured for this environment")
     timeout = app_config.getint("browser", "timeout")
-    context = browser.new_context(permissions=_permissions(app_config), no_viewport=True)
+    context = browser.new_context(**desktop_context_options(app_config))
     page = context.new_page()
-    page.set_default_timeout(timeout)
+    prepare_desktop_page(page, app_config, record_artifacts=False)
     login = HBLoginPage(page, environment_config, timeout)
     created: list[dict] = []
     try:
@@ -60,7 +60,9 @@ def hb_session_setup(browser: Browser, app_config, environment_config, test_data
                     allure.attach(
                         "\n".join(problems), name="Not moved out", attachment_type=allure.attachment_type.TEXT
                     )
-        context.close()
+        close_context_with_videos(
+            context, app_config, name="hb-session-setup-video"
+        )
         if problems:
             # A failure, not just a warning: the first run left Space 0040
             # occupied and only a warning said so (2026-09-14).

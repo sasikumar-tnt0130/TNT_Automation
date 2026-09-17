@@ -1,10 +1,5 @@
 {
-  "dev": {
-    "script_property": "",
-    "script_property_settings_name": "",
-    "other_property": ""
-  },
-  "uat": {
+  "defaults": {
     "script_property": "",
     "script_property_settings_name": "",
     "other_property": ""
@@ -13,10 +8,5 @@
     "script_property": "Chula Vista",
     "script_property_settings_name": "Storage Outlet - Chula Vista",
     "other_property": "Bellflower"
-  },
-  "stage": {
-    "script_property": "",
-    "script_property_settings_name": "",
-    "other_property": ""
   }
 }

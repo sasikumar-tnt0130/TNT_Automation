@@ -12,7 +12,7 @@ def storefront(page, environment_config, app_config) -> MPUnitSearchPage:
     if not (environment_config.mp_city and environment_config.mp_state):
         pytest.skip(
             f"No storefront property (mp_city/mp_state) configured for "
-            f"{environment_config.name} in environments.ini"
+            f"{environment_config.name} in properties.ini"
         )
     storefront_page = MPUnitSearchPage(
         page, environment_config.mp_base_url, app_config.getint("browser", "timeout")

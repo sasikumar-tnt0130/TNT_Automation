@@ -6,6 +6,7 @@ from playwright.sync_api import Page, expect
 from common_utils.wrapper_methods import log_method_exceptions
 from pages.common.hb_settings_navigation import HBSettingsNavigation
 from pages.mariposa.mp_unit_search_page import MPUnitSearchPage
+from common_utils.waits import waits
 
 
 class MPFMSInitialSetupPage:
@@ -19,12 +20,18 @@ class MPFMSInitialSetupPage:
     this is set to Grid View or List View.
 
     Value Tier Layout is a separate setting, immediately below Landing
-    Page Layout on the same form (confirmed live 2026-09-08, Garden
-    Grove/GARDEN GROVE) - only two values, no "Default": Grid View, List
-    View. Controls how a unit's protection-plan tiers (Economy/Standard/
-    Premium) render in the tier-selection dialog (see
-    MPUnitSearchPage.select_unit) - not yet confirmed live which of Grid/List
-    corresponds to which rendering.
+    Page Layout on the same form when Landing is Grid View or List View
+    (confirmed live 2026-09-08, Garden Grove/GARDEN GROVE) - only two
+    values, no "Default": Grid View, List View. Controls how a unit's
+    protection-plan tiers (Economy/Standard/Premium) render in the
+    tier-selection dialog (see MPUnitSearchPage.select_unit).
+
+    Confirmed live 2026-09-16 stage/Garden Grove: when Landing Page
+    Layout is Default, the Value Tier Layout control is omitted from
+    the form entirely (Landing Page Layout sits directly above
+    2-Step Rental Process). Configure Value Tier Layout while Landing
+    is still Grid/List, then switch to Default if a Default landing
+    case needs a specific tier rendering.
 
     Advance Reservation Days is a plain numeric field, separate from
     the Landing/Value Tier Layout dropdowns above but on the same form
@@ -58,7 +65,7 @@ class MPFMSInitialSetupPage:
             for _ in range(3):
                 self.nav.switch_app_filter_to_website()
                 try:
-                    expect(fms_initial_setup).to_be_visible(timeout=15000)
+                    expect(fms_initial_setup).to_be_visible(timeout=waits().long)
                     break
                 except AssertionError:
                     continue
@@ -144,40 +151,75 @@ class MPFMSInitialSetupPage:
             return (trigger.text_content() or "").strip()
 
     @log_method_exceptions
-    def set_landing_page_layout(self, property_id: str, layout: str) -> None:
+    def set_landing_page_layout(self, property_id: str, layout: str, *, clear_cache: bool = True) -> None:
         """Sets the Landing Page Layout (Default / Grid View / List View)
         for a property. No-ops if already set to `layout`."""
-        with allure.step(f"Set Landing Page Layout to {layout} for property: {property_id}"):
+        with allure.step(
+            f"Set Landing Page Layout to {layout} ({property_id})"
+        ):
             self.open_landing_page_layout_settings(property_id)
             trigger = self._layout_trigger(0)
-            # A bare `return` here previously skipped clear_cache()
-            # below entirely (it sat outside this `with` block) whenever
-            # already set to `layout` - see set_two_step for why that
-            # leaves the storefront on a stale cache. Only the actual
-            # dropdown change is conditional now; the cache always gets
-            # cleared.
-            if (trigger.text_content() or "").strip() != layout:
-                # Confirmed live (2026-09-08): a JS-synthetic click here
-                # never opens the dropdown at all (the "option" role
-                # below then times out with 0 matches) - this Vuetify
-                # autocomplete needs a real, actionability-checked
-                # pointer click.
-                trigger.click()
-                option = self.page.get_by_role("option", name=layout, exact=True)
-                expect(option).to_be_visible(timeout=self.timeout)
-                option.click()
-                self.page.keyboard.press("Escape")
-                self.page.get_by_role("button", name="Save", exact=True).click()
-                expect(trigger).to_have_text(layout, timeout=self.timeout)
-        self.nav.clear_cache()
+            current = (trigger.text_content() or "").strip()
+            # Only mark clear-pending / Save when the dropdown actually changes.
+            # Callers that batch several FMS writes pass clear_cache=False
+            # and flush once at the end; clear_cache() itself no-ops when
+            # no clear is pending.
+            if current != layout:
+                with allure.step(
+                    f"Save Landing Page Layout ({current} → {layout})"
+                ):
+                    # Confirmed live (2026-09-08): a JS-synthetic click here
+                    # never opens the dropdown at all (the "option" role
+                    # below then times out with 0 matches) - this Vuetify
+                    # autocomplete needs a real, actionability-checked
+                    # pointer click.
+                    trigger.click()
+                    option = self.page.get_by_role(
+                        "option", name=layout, exact=True
+                    )
+                    expect(option).to_be_visible(timeout=self.timeout)
+                    option.click()
+                    self.page.keyboard.press("Escape")
+                    self.page.get_by_role(
+                        "button", name="Save", exact=True
+                    ).click()
+                    expect(trigger).to_have_text(layout, timeout=self.timeout)
+                    self.nav.mark_website_cache_clear_pending()
+            else:
+                with allure.step(
+                    f"Skip Save (Landing Page Layout already {layout})"
+                ):
+                    pass
+            if clear_cache:
+                self.nav.clear_cache()
 
     @log_method_exceptions
     def open_value_tier_layout_settings(self, property_id: str) -> None:
         with allure.step(f"Open Value Tier Layout settings for property: {property_id}"):
             self.open_fms_initial_setup()
             self.nav.select_property(property_id)
+            # Wait for the form itself - Landing Page Layout is always
+            # present; Value Tier Layout mounts with it when applicable.
+            expect(
+                self.page.get_by_text("Landing Page Layout", exact=True)
+            ).to_be_visible(timeout=self.timeout)
             layout_label = self.page.get_by_text("Value Tier Layout", exact=True)
-            expect(layout_label).to_be_visible(timeout=self.timeout)
+            # Hidden entirely when Landing Page Layout is Default
+            # (walked 2026-09-16 stage/Garden Grove). Give the form a
+            # short window to paint the control before treating it as
+            # absent - a synchronous .count() right after select_property
+            # raced the render and false-negatived on Grid/List too.
+            try:
+                expect(layout_label).to_be_visible(timeout=waits().medium)
+            except AssertionError:
+                landing = (self._layout_trigger(0).text_content() or "").strip()
+                raise AssertionError(
+                    "Value Tier Layout is not on FMS Initial Setup for "
+                    f"{property_id!r} while Landing Page Layout is "
+                    f"{landing!r}. It only appears when Landing is Grid "
+                    "View or List View - set Landing to one of those "
+                    "before configuring Value Tier Layout."
+                ) from None
 
     @log_method_exceptions
     def get_value_tier_layout(self, property_id: str) -> str:
@@ -187,28 +229,45 @@ class MPFMSInitialSetupPage:
             return (trigger.text_content() or "").strip()
 
     @log_method_exceptions
-    def set_value_tier_layout(self, property_id: str, layout: str) -> None:
+    def set_value_tier_layout(self, property_id: str, layout: str, *, clear_cache: bool = True) -> None:
         """Sets the Value Tier Layout (Grid View / List View - no
         "Default", unlike Landing Page Layout) for a property. No-ops if
-        already set to `layout`."""
-        with allure.step(f"Set Value Tier Layout to {layout} for property: {property_id}"):
+        already set to `layout`. Requires Landing Page Layout to be Grid
+        View or List View so the control is on the form."""
+        with allure.step(
+            f"Set Value Tier Layout to {layout} ({property_id})"
+        ):
             self.open_value_tier_layout_settings(property_id)
             trigger = self._layout_trigger(1)
-            # See set_landing_page_layout for why this is now a
-            # conditional action rather than an early `return` -
-            # clear_cache() below must always run.
-            if (trigger.text_content() or "").strip() != layout:
-                # See set_landing_page_layout: a JS-synthetic click never
-                # opens this Vuetify autocomplete's dropdown - a real,
-                # actionability-checked pointer click is required.
-                trigger.click()
-                option = self.page.get_by_role("option", name=layout, exact=True)
-                expect(option).to_be_visible(timeout=self.timeout)
-                option.click()
-                self.page.keyboard.press("Escape")
-                self.page.get_by_role("button", name="Save", exact=True).click()
-                expect(trigger).to_have_text(layout, timeout=self.timeout)
-        self.nav.clear_cache()
+            current = (trigger.text_content() or "").strip()
+            # See set_landing_page_layout: Save + mark clear-pending only on change;
+            # clear_cache() below flushes only when pending (or force).
+            if current != layout:
+                with allure.step(
+                    f"Save Value Tier Layout ({current} → {layout})"
+                ):
+                    # See set_landing_page_layout: a JS-synthetic click never
+                    # opens this Vuetify autocomplete's dropdown - a real,
+                    # actionability-checked pointer click is required.
+                    trigger.click()
+                    option = self.page.get_by_role(
+                        "option", name=layout, exact=True
+                    )
+                    expect(option).to_be_visible(timeout=self.timeout)
+                    option.click()
+                    self.page.keyboard.press("Escape")
+                    self.page.get_by_role(
+                        "button", name="Save", exact=True
+                    ).click()
+                    expect(trigger).to_have_text(layout, timeout=self.timeout)
+                    self.nav.mark_website_cache_clear_pending()
+            else:
+                with allure.step(
+                    f"Skip Save (Value Tier Layout already {layout})"
+                ):
+                    pass
+            if clear_cache:
+                self.nav.clear_cache()
 
     @log_method_exceptions
     def open_advance_reservation_days_settings(self, property_id: str) -> None:
@@ -244,20 +303,32 @@ class MPFMSInitialSetupPage:
     @log_method_exceptions
     def set_advance_reservation_days(self, property_id: str, days: int) -> None:
         """Sets Advance Reservation Days for a property. No-ops the
-        field write if already set to `days` - see set_landing_page_
-        layout for why clear_cache() below still always runs
-        regardless."""
+        field write if already set to `days`; Clear Cache only runs when
+        the value actually changed (clear-pending flag)."""
         with allure.step(
-            f"Set Advance Reservation Days to {days} for property: {property_id}"
+            f"Set Advance Reservation Days to {days} ({property_id})"
         ):
             self.open_advance_reservation_days_settings(property_id)
             field = self._advance_reservation_days_input
             current = field.input_value().strip()
             if current != str(days):
-                field.fill(str(days))
-                self.page.get_by_role("button", name="Save", exact=True).click()
-                expect(field).to_have_value(str(days), timeout=self.timeout)
-        self.nav.clear_cache()
+                with allure.step(
+                    f"Save Advance Reservation Days ({current} → {days})"
+                ):
+                    field.fill(str(days))
+                    self.page.get_by_role(
+                        "button", name="Save", exact=True
+                    ).click()
+                    expect(field).to_have_value(
+                        str(days), timeout=self.timeout
+                    )
+                    self.nav.mark_website_cache_clear_pending()
+            else:
+                with allure.step(
+                    f"Skip Save (Advance Reservation Days already {days})"
+                ):
+                    pass
+            self.nav.clear_cache()
 
     @log_method_exceptions
     def open_two_step_settings(self, property_name: str) -> None:
@@ -307,8 +378,10 @@ class MPFMSInitialSetupPage:
         physical property, e.g. "GARDEN GROVE" here vs "Hamilton Self
         Storage" there) - always pass FMS's own name, not whatever the
         Lease Configuration picker was last set to."""
-        action = "Enable" if enable else "Disable"
-        with allure.step(f"{action} Two-Step Rental"):
+        desired = "ON" if enable else "OFF"
+        with allure.step(
+            f"Set Two-Step Rental to {desired} ({property_name})"
+        ):
             # Confirmed live (2026-09-08, stage): this toggle can
             # silently reject a click - no error, switch stays on its
             # old value - when FMS Initial Setup's own "can this be
@@ -331,127 +404,187 @@ class MPFMSInitialSetupPage:
                     "xpath=following::input[@role='switch'][1]"
                 )
                 if two_step_switch.is_checked() == enable:
+                    with allure.step(
+                        f"Skip toggle (Two-Step already {desired}, "
+                        f"attempt {attempt + 1}/{max_attempts})"
+                    ):
+                        pass
                     break
-                two_step_switch.click(force=True)
-                try:
-                    if enable:
-                        confirmation = self.page.get_by_text(
-                            re.compile(r"You are about to enable 2-Step Rental")
-                        )
-                        expect(confirmation).to_be_visible(timeout=self.timeout)
-                        confirm_button = self.page.get_by_role(
-                            "button", name="Confirm", exact=True
-                        )
-                        confirm_button.click()
-                        expect(confirm_button).to_be_hidden(timeout=self.timeout)
-                        # Confirmed live (2026-09-09, stage): the
-                        # confirmation dialog above always appears first,
-                        # unconditionally, regardless of Super Lease/
-                        # Clickwrap state - only *after* clicking Confirm
-                        # does FMS run its real eligibility check
-                        # (confirmed via the app's own bundled JS,
-                        # captured in an Allure attachment from an
-                        # earlier run, and by direct live reproduction).
-                        # When that check fails - a stale client-side
-                        # `superleaseEnabled` flag on the FMS Initial
-                        # Setup component, set once at mount and never
-                        # re-fetched after Lease Configuration changes it
-                        # elsewhere in the same session - a *second*,
-                        # separate "Warning" dialog appears instead ("We
-                        # are unable to turn on Superlease...", with its
-                        # own "Close" button) and the switch is reset
-                        # back to unchecked, rather than the switch
-                        # simply becoming checked. This appears near-
-                        # instantly (a synchronous Vue $nextTick, not a
-                        # network call), so a short wait here is enough
-                        # to catch it before falling through to the
-                        # normal (longer) checked-state wait below.
-                        # clear_cache() (server/CDN cache) never touched
-                        # this in-memory value; only a hard reload of
-                        # this page forces the component to remount and
-                        # re-read the real, current state (see the
-                        # except branch below).
-                        stale_state_warning = self.page.get_by_text(
-                            re.compile(r"unable to turn on Superlease", re.IGNORECASE)
-                        )
-                        try:
-                            expect(stale_state_warning).to_be_visible(timeout=3000)
-                        except AssertionError:
-                            pass
-                        else:
-                            close_button = self.page.get_by_role(
-                                "button", name="Close", exact=True
-                            )
-                            if close_button.is_visible():
-                                close_button.click()
+                # Live 2026-09-17: when Superlease/Clickwrap are not yet
+                # visible to FMS, the switch looks gray but is often still
+                # not input[disabled]. Prefer eligibility recovery when the
+                # requirements banner is shown and enable is requested.
+                requirements = self.page.get_by_text(
+                    "To activate 2-Step Rental", exact=False
+                )
+                prerequisites_blocking = (
+                    enable
+                    and requirements.count() > 0
+                    and requirements.first.is_visible()
+                    and (
+                        two_step_switch.is_disabled()
+                        or two_step_switch.get_attribute("aria-disabled") == "true"
+                    )
+                )
+                if prerequisites_blocking:
+                    with allure.step(
+                        f"2-Step switch blocked by prerequisites "
+                        f"attempt {attempt + 1}/{max_attempts}"
+                    ):
+                        if attempt == max_attempts - 1:
                             raise AssertionError(
-                                "2-Step enable rejected: FMS Initial "
-                                "Setup showed the \"unable to turn on "
-                                "Superlease\" stale-state warning after "
-                                "confirming"
+                                "Enable 2-Step Rental is blocked - FMS still "
+                                "requires Superlease and Clickwrap enabled "
+                                f"for {property_name!r}. Enable those under "
+                                "Lease Configuration & State Compliance first, "
+                                "then Clear Cache."
                             )
-                        expect(two_step_switch).to_be_checked(timeout=self.timeout)
-                    else:
-                        # Per explicit instruction: this toggle takes
-                        # effect on click, for enable (Confirm) and
-                        # disable alike - no separate Save button
-                        # needed either way.
-                        expect(two_step_switch).not_to_be_checked(timeout=self.timeout)
-                    break
-                except AssertionError:
-                    if attempt == max_attempts - 1:
-                        raise
-                    # Confirmed live (2026-09-08, stage): a failure
-                    # here (e.g. the confirmation dialog never showing
-                    # matching text) can still leave its Vuetify modal
-                    # overlay (".v-overlay--active") up, which then
-                    # blocks clear_cache()'s own first click for the
-                    # rest of its timeout - clearing any stray overlay
-                    # first (a no-op if none is up) so the retry itself
-                    # doesn't get stuck behind whatever this attempt
-                    # left open.
-                    self.page.keyboard.press("Escape")
-                    expect(
-                        self.page.locator(".v-overlay--active")
-                    ).to_be_hidden(timeout=self.timeout)
-                    # Confirmed live (2026-09-09, stage): even a
-                    # genuinely fresh login/session (a brand-new
-                    # browser context sharing none of this page's
-                    # state) hit this exact same rejection immediately
-                    # after Super Lease/Clickwrap were enabled - ruling
-                    # out every client-side caching theory tried here (a
-                    # stale Vue component flag, a closed Settings
-                    # panel, cached localStorage/sessionStorage all
-                    # confirmed live not to be it). What's left is a
-                    # backend propagation delay: whatever FMS Initial
-                    # Setup's eligibility check actually reads lags
-                    # behind the write Super Lease/Clickwrap just made
-                    # elsewhere. A real wait - not just a reload - is
-                    # what actually gives that time to catch up;
-                    # reload() and clear_cache() are kept too since
-                    # they're cheap and don't hurt, even though neither
-                    # alone was the fix.
-                    #
-                    # Extended to disable too (2026-09-09): observed live
-                    # that disabling Two-Step right after disabling
-                    # Super Lease/Clickwrap hit the same silent click
-                    # rejection (switch stayed checked, no error) that
-                    # this recovery previously only ran for enable - the
-                    # same eligibility check plausibly gates disabling
-                    # too, so the same reload+wait is applied here
-                    # rather than the plain clear_cache() this branch
-                    # used to fall back to on disable.
-                    self.page.reload(wait_until="load")
-                    self.nav.clear_cache()
-                    self.page.wait_for_timeout(20000)
-        # A bare `return` above previously skipped this entirely
-        # whenever the switch already matched - confirmed live
-        # (2026-09-08, stage) this leaves the storefront serving a
-        # stale cache from whatever it last saw, even though the
-        # admin-side value looks correct. Always cleared, not folded
-        # into the retry loop above, which only clears on an actual
-        # verification failure.
-        self.nav.clear_cache()
+                        self.page.keyboard.press("Escape")
+                        self.page.reload(wait_until="load")
+                        self.nav.clear_cache(force=True)
+                        self.page.wait_for_timeout(waits().long)
+                        continue
+                with allure.step(
+                    f"Toggle Two-Step to {desired} "
+                    f"(attempt {attempt + 1}/{max_attempts})"
+                ):
+                    two_step_switch.click(force=True)
+                    try:
+                        if enable:
+                            confirmation = self.page.get_by_text(
+                                re.compile(
+                                    r"You are about to enable 2-Step Rental"
+                                )
+                            )
+                            expect(confirmation).to_be_visible(
+                                timeout=self.timeout
+                            )
+                            confirm_button = self.page.get_by_role(
+                                "button", name="Confirm", exact=True
+                            )
+                            confirm_button.click()
+                            expect(confirm_button).to_be_hidden(
+                                timeout=self.timeout
+                            )
+                            # Confirmed live (2026-09-09, stage): the
+                            # confirmation dialog above always appears first,
+                            # unconditionally, regardless of Super Lease/
+                            # Clickwrap state - only *after* clicking Confirm
+                            # does FMS run its real eligibility check
+                            # (confirmed via the app's own bundled JS,
+                            # captured in an Allure attachment from an
+                            # earlier run, and by direct live reproduction).
+                            # When that check fails - a stale client-side
+                            # `superleaseEnabled` flag on the FMS Initial
+                            # Setup component, set once at mount and never
+                            # re-fetched after Lease Configuration changes it
+                            # elsewhere in the same session - a *second*,
+                            # separate "Warning" dialog appears instead ("We
+                            # are unable to turn on Superlease...", with its
+                            # own "Close" button) and the switch is reset
+                            # back to unchecked, rather than the switch
+                            # simply becoming checked. This appears near-
+                            # instantly (a synchronous Vue $nextTick, not a
+                            # network call), so a short wait here is enough
+                            # to catch it before falling through to the
+                            # normal (longer) checked-state wait below.
+                            # clear_cache() (server/CDN cache) never touched
+                            # this in-memory value; only a hard reload of
+                            # this page forces the component to remount and
+                            # re-read the real, current state (see the
+                            # except branch below).
+                            stale_state_warning = self.page.get_by_text(
+                                re.compile(
+                                    r"unable to turn on Superlease",
+                                    re.IGNORECASE,
+                                )
+                            )
+                            try:
+                                expect(stale_state_warning).to_be_visible(
+                                    timeout=waits().tiny
+                                )
+                            except AssertionError:
+                                pass
+                            else:
+                                close_button = self.page.get_by_role(
+                                    "button", name="Close", exact=True
+                                )
+                                if close_button.is_visible():
+                                    close_button.click()
+                                raise AssertionError(
+                                    "2-Step enable rejected: FMS Initial "
+                                    "Setup showed the \"unable to turn on "
+                                    "Superlease\" stale-state warning after "
+                                    "confirming"
+                                )
+                            expect(two_step_switch).to_be_checked(
+                                timeout=self.timeout
+                            )
+                        else:
+                            # Per explicit instruction: this toggle takes
+                            # effect on click, for enable (Confirm) and
+                            # disable alike - no separate Save button
+                            # needed either way.
+                            expect(two_step_switch).not_to_be_checked(
+                                timeout=self.timeout
+                            )
+                        self.nav.mark_website_cache_clear_pending()
+                        break
+                    except AssertionError:
+                        if attempt == max_attempts - 1:
+                            raise
+                        with allure.step(
+                            f"Recover Two-Step toggle "
+                            f"(reload, force Clear Cache, wait) "
+                            f"before attempt {attempt + 2}"
+                        ):
+                            # Confirmed live (2026-09-08, stage): a failure
+                            # here (e.g. the confirmation dialog never showing
+                            # matching text) can still leave its Vuetify modal
+                            # overlay (".v-overlay--active") up, which then
+                            # blocks clear_cache()'s own first click for the
+                            # rest of its timeout - clearing any stray overlay
+                            # first (a no-op if none is up) so the retry itself
+                            # doesn't get stuck behind whatever this attempt
+                            # left open.
+                            self.page.keyboard.press("Escape")
+                            expect(
+                                self.page.locator(".v-overlay--active")
+                            ).to_be_hidden(timeout=self.timeout)
+                            # Confirmed live (2026-09-09, stage): even a
+                            # genuinely fresh login/session (a brand-new
+                            # browser context sharing none of this page's
+                            # state) hit this exact same rejection immediately
+                            # after Super Lease/Clickwrap were enabled - ruling
+                            # out every client-side caching theory tried here (a
+                            # stale Vue component flag, a closed Settings
+                            # panel, cached localStorage/sessionStorage all
+                            # confirmed live not to be it). What's left is a
+                            # backend propagation delay: whatever FMS Initial
+                            # Setup's eligibility check actually reads lags
+                            # behind the write Super Lease/Clickwrap just made
+                            # elsewhere. A real wait - not just a reload - is
+                            # what actually gives that time to catch up;
+                            # reload() and clear_cache(force=True) are kept too
+                            # since they're cheap and don't hurt, even though
+                            # neither alone was the fix.
+                            #
+                            # Extended to disable too (2026-09-09): observed live
+                            # that disabling Two-Step right after disabling
+                            # Super Lease/Clickwrap hit the same silent click
+                            # rejection (switch stayed checked, no error) that
+                            # this recovery previously only ran for enable - the
+                            # same eligibility check plausibly gates disabling
+                            # too, so the same reload+wait is applied here
+                            # rather than the plain clear_cache() this branch
+                            # used to fall back to on disable.
+                            self.page.reload(wait_until="load")
+                            self.nav.clear_cache(force=True)
+                            self.page.wait_for_timeout(20000)
+            # Flush only when the toggle actually changed (clear pending). When the
+            # switch already matched, skip - callers that previously cleared
+            # on already_configured no longer do.
+            self.nav.clear_cache()
 
     @log_method_exceptions
     def verify_two_step_on_storefront(
@@ -489,7 +622,7 @@ class MPFMSInitialSetupPage:
         assuming the admin side is still correct."""
         expected_flow = "two_step" if enable else "legacy"
         action = "enabled" if enable else "disabled"
-        with allure.step(f"Verify 2-Step Rental is {action} on the storefront"):
+        with allure.step(f"Verify Two-Step Rental is {action} on the storefront"):
             max_attempts = 3
             for attempt in range(max_attempts):
                 if property_url:
@@ -520,7 +653,7 @@ class MPFMSInitialSetupPage:
 
     @log_method_exceptions
     def is_two_step_enabled(self, property_name: str) -> bool:
-        with allure.step("Read 2-Step Rental state"):
+        with allure.step("Read Two-Step Rental state"):
             self.open_two_step_settings(property_name)
             two_step_label = self.page.get_by_text("Enable 2-Step Rental", exact=True)
             two_step_switch = two_step_label.locator(

@@ -71,7 +71,7 @@ def create_single_tenant(
     tenant is appended to `created` as soon as it exists, so a failure
     part-way still gets it moved out."""
     guest = new_hb_lead_guest()
-    with allure.step("A one-space tenant"):
+    with allure.step("Create a one-space tenant"):
         # Quick Actions ("Move In/Reserve") are on the dashboard only - the
         # page can still be on the two-space tenant's page (2026-09-14).
         _dashboard(page, environment_config)
@@ -82,7 +82,7 @@ def create_single_tenant(
         created.append(tenant)
 
     contact = new_additional_contact()
-    with allure.step("Its Alternate contact"):
+    with allure.step("Add its alternate contact"):
         _open_new_tenant(page, timeout, environment_config, lease_data["property_name"], tenant)
         # SMS on, so texts can go to it too - its number is fictional as well.
         HBAdditionalContactsPage(page, timeout).add_contact(contact, "Alternate", [tenant["space"]], sms=True)
@@ -112,7 +112,7 @@ def create_two_space_tenant(
     the read-only communication tests read - see seed_history. Appended to
     `created` as soon as it exists."""
     guest = new_hb_lead_guest()
-    with allure.step("A two-space tenant"):
+    with allure.step("Create a two-space tenant"):
         _dashboard(page, environment_config)
         lease = create_lease_through_quick_action(
             page, timeout, environment_config, lease_data, guest, payment_method="cash"

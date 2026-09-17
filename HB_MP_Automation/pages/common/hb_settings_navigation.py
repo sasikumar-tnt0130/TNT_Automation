@@ -9,6 +9,7 @@ from playwright.sync_api import (
 )
 
 from common_utils.wrapper_methods import log_method_exceptions
+from common_utils.waits import waits
 
 
 class HBSettingsNavigation:
@@ -19,6 +20,95 @@ class HBSettingsNavigation:
         self.page = page
         self.timeout = timeout
         self.property_name: str | None = None
+        # Set by callers after a real Website-settings Save; clear_cache()
+        # no-ops unless this is True (or force=True).
+        self._website_cache_clear_pending: bool = False
+
+    @log_method_exceptions
+    def mark_website_cache_clear_pending(self) -> None:
+        """Record that Website settings changed and the storefront cache
+        needs a Clear Cache before the next storefront read.
+
+        No Allure step here — callers already step the Save; clear_cache()
+        reports whether the flush ran or was skipped."""
+        self._website_cache_clear_pending = True
+
+    @log_method_exceptions
+    def clear_cache(self, *, force: bool = False) -> None:
+        """Flush Website Clear Cache when a clear is pending, or when
+        `force=True` (Two-Step retry / recovery paths that must clear
+        even with no local Save in this session)."""
+        if not force and not self._website_cache_clear_pending:
+            with allure.step("Skip Clear Cache (nothing pending)"):
+                return
+        reason = (
+            "forced recovery"
+            if force
+            else "settings changed"
+        )
+        with allure.step(f"Clear website cache ({reason})"):
+            self.open_settings_panel()
+            clear_cache_link = self.page.get_by_text("Clear Cache", exact=True)
+            if not clear_cache_link.is_visible():
+                self.switch_app_filter_to_website()
+            expect(clear_cache_link).to_be_visible(timeout=self.timeout)
+            clear_cache_link.click()
+            self.switch_app_filter_to_website()
+            clear_btn = self.page.get_by_role(
+                "button", name="Clear Cache", exact=True
+            )
+            expect(clear_btn).to_be_visible(timeout=self.timeout)
+            # Confirmed live 2026-09-16: a prior clear can leave the button
+            # in v-btn--loading with an overlay <span> intercepting clicks.
+            # Wait for loading to finish, then force-click if needed.
+            try:
+                expect(clear_btn).not_to_have_class(
+                    re.compile(r"v-btn--loading"), timeout=waits().long
+                )
+            except AssertionError:
+                pass
+            try:
+                clear_btn.click(timeout=waits().medium)
+            except PlaywrightTimeoutError:
+                clear_btn.click(force=True)
+            # Wait for this click's own loading cycle to finish before
+            # reading the outcome - otherwise a leftover "Failed to Warm
+            # … Cache" toast from an earlier attempt can look like success
+            # immediately (2026-09-17, uat_storoutlet).
+            try:
+                expect(clear_btn).not_to_have_class(
+                    re.compile(r"v-btn--loading"), timeout=waits().long
+                )
+            except AssertionError:
+                pass
+            success_message = self.page.get_by_text(
+                "Cache cleared successfully!", exact=True
+            )
+            # Confirmed live 2026-09-17 (uat_storoutlet): Clear Cache can
+            # finish the website flush but fail "Warm Homepage Middleware
+            # Cache" and never show the success toast - that warm step is
+            # not required for Two-Step/storefront to pick up Saves.
+            warm_failed = self.page.get_by_text(
+                re.compile(r"Failed to Warm .* Middleware Cache", re.I)
+            )
+            # A single click's own "success" message isn't a reliable
+            # signal that a stale value is actually gone elsewhere (e.g.
+            # FMS Initial Setup's Two-Step toggle reading Clickwrap/
+            # Super Lease from before this clear - see
+            # LeaseConfigurationSetup.
+            # enable_two_step_clickwrap_and_super_lease's own caching
+            # comments) - callers that can verify a specific downstream
+            # effect (e.g. MPFMSInitialSetupPage.set_two_step) retry
+            # clear_cache(force=True) themselves against that real signal,
+            # rather than this generic method (shared by layout settings
+            # too, which have no such signal to check) always clicking
+            # multiple times whether or not it was actually needed.
+            try:
+                expect(success_message).to_be_visible(timeout=waits().medium)
+            except AssertionError:
+                if not (warm_failed.count() > 0 and warm_failed.first.is_visible()):
+                    expect(success_message).to_be_visible(timeout=self.timeout)
+            self._website_cache_clear_pending = False
 
     @log_method_exceptions
     def _dismiss_blocking_dialog(self) -> None:
@@ -62,7 +152,7 @@ class HBSettingsNavigation:
         if live_agent_notification.count() > 0 and live_agent_notification.first.is_visible():
             if close_notification.count() > 0 and close_notification.first.is_visible():
                 try:
-                    close_notification.first.click(timeout=5000)
+                    close_notification.first.click(timeout=waits().short)
                 except PlaywrightTimeoutError:
                     pass
 
@@ -132,7 +222,7 @@ class HBSettingsNavigation:
                     # confirmed reliably reaches the real state
                     # underneath (either the Settings panel, or this
                     # access_error dialog, both handled below).
-                    settings_button.click(timeout=15000, force=True)
+                    settings_button.click(timeout=waits().long, force=True)
                     # Confirmed live: the click can register but the
                     # panel just never renders (no error, no Filter
                     # textbox - a dead client-side state), rather than
@@ -140,7 +230,7 @@ class HBSettingsNavigation:
                     # loading" from "never coming" without burning the
                     # full 15s on a state that won't resolve on its own -
                     # a full reload resets it before the next attempt.
-                    expect(settings_panel).to_be_visible(timeout=5000)
+                    expect(settings_panel).to_be_visible(timeout=waits().short)
                     opened = True
                     break
                 except (AssertionError, PlaywrightError):
@@ -230,31 +320,3 @@ class HBSettingsNavigation:
             ).last
             expect(property_option).to_be_visible(timeout=self.timeout)
             property_option.click()
-
-    @log_method_exceptions
-    def clear_cache(self) -> None:
-        with allure.step("Clear website cache and verify settings updated"):
-            self.open_settings_panel()
-            clear_cache_link = self.page.get_by_text("Clear Cache", exact=True)
-            if not clear_cache_link.is_visible():
-                self.switch_app_filter_to_website()
-            expect(clear_cache_link).to_be_visible(timeout=self.timeout)
-            clear_cache_link.click()
-            self.switch_app_filter_to_website()
-            self.page.get_by_role("button", name="Clear Cache", exact=True).click()
-            success_message = self.page.get_by_text(
-                "Cache cleared successfully!", exact=True
-            )
-            # A single click's own "success" message isn't a reliable
-            # signal that a stale value is actually gone elsewhere (e.g.
-            # FMS Initial Setup's Two-Step toggle reading Clickwrap/
-            # Super Lease from before this clear - see
-            # LeaseConfigurationSetup.
-            # enable_two_step_clickwrap_and_super_lease's own caching
-            # comments) - callers that can verify a specific downstream
-            # effect (e.g. MPFMSInitialSetupPage.set_two_step) retry
-            # clear_cache themselves against that real signal, rather
-            # than this generic method (shared by layout settings too,
-            # which have no such signal to check) always clicking
-            # multiple times whether or not it was actually needed.
-            expect(success_message).to_be_visible(timeout=self.timeout)

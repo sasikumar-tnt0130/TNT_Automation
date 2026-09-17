@@ -5,6 +5,7 @@ from playwright.sync_api import Page, expect
 
 from common_utils.wrapper_methods import log_method_exceptions
 from pages.common.hb_settings_navigation import HBSettingsNavigation
+from common_utils.waits import waits
 
 
 class MPCompanyBlogPage:
@@ -54,7 +55,7 @@ class MPCompanyBlogPage:
             for _ in range(3):
                 self.nav.switch_app_filter_to_website()
                 try:
-                    expect(link).to_be_visible(timeout=15000)
+                    expect(link).to_be_visible(timeout=waits().long)
                     break
                 except AssertionError:
                     continue
@@ -121,7 +122,7 @@ class MPCompanyBlogPage:
         teardown for a row that will never exist."""
         for title in self.created_titles:
             try:
-                self.delete_company_blog(title, timeout=5000)
+                self.delete_company_blog(title, timeout=waits().short)
             except Exception:
                 pass
         self.created_titles = []
@@ -170,7 +171,7 @@ class MPCompanyBlogPage:
 
     @log_method_exceptions
     def fill_title(self, title: str) -> None:
-        with allure.step(f"Set Company Blog Title: {title}"):
+        with allure.step(f"Set Company Blog title: {title}"):
             self.open_content_tab()
             self.page.get_by_role("textbox", name="Enter Blog Title").fill(title)
             if self._pending_new_blog:
@@ -427,7 +428,7 @@ class MPCompanyBlogPage:
 
     @log_method_exceptions
     def get_authors_list(self) -> list[str]:
-        with allure.step("Read Authors list"):
+        with allure.step("Read authors list"):
             return [
                 t.strip()
                 for t in self.page.locator("table tbody tr").all_text_contents()
@@ -482,7 +483,7 @@ class MPCompanyBlogPage:
 
     @log_method_exceptions
     def fill_contents(self, contents: str) -> None:
-        with allure.step("Set Company Blog Contents"):
+        with allure.step("Set Company Blog contents"):
             editor = self.page.get_by_text("Contents*", exact=True).locator(
                 "xpath=following::*[@contenteditable='true'][1]"
             )
@@ -581,7 +582,7 @@ class MPCompanyBlogPage:
 
     @log_method_exceptions
     def fill_image_alt_text(self, alt_text: str) -> None:
-        with allure.step(f"Set Header Image Alt Text: {alt_text}"):
+        with allure.step(f"Set header image alt text: {alt_text}"):
             self.open_content_tab()
             self.page.get_by_role(
                 "textbox", name="Enter Alt Text"
@@ -609,7 +610,7 @@ class MPCompanyBlogPage:
         is active. `months_back` clicks the calendar's previous-month
         arrow that many times first, for picking a date in an earlier
         month than the one shown by default."""
-        with allure.step(f"Set Publish Date day: {day} (months_back={months_back})"):
+        with allure.step(f"Set publish date day: {day} (months_back={months_back})"):
             self.open_settings_tab()
             self.page.get_by_role("button", name="Publish Date").evaluate(
                 "el => el.click()"
@@ -637,7 +638,7 @@ class MPCompanyBlogPage:
 
     @log_method_exceptions
     def get_publish_date(self) -> str:
-        with allure.step("Read Company Blog Publish Date"):
+        with allure.step("Read Company Blog publish date"):
             self.open_settings_tab()
             button = self.page.get_by_role("button", name="Publish Date")
             if button.count() == 0:
@@ -661,4 +662,5 @@ class MPCompanyBlogPage:
                 raise AssertionError(
                     f"Save Company Blog was rejected: {caution_banner.text_content()}"
                 )
-        self.nav.clear_cache()
+            self.nav.mark_website_cache_clear_pending()
+            self.nav.clear_cache()

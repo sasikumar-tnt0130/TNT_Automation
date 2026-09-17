@@ -5,6 +5,7 @@ from playwright.sync_api import Locator, expect
 
 from common_utils.wrapper_methods import log_method_exceptions
 from pages.common.hb_tenant_notes_page import HBTenantNotesPage
+from common_utils.waits import waits
 
 
 class HBCommunicationFiltersPage(HBTenantNotesPage):
@@ -45,7 +46,7 @@ class HBCommunicationFiltersPage(HBTenantNotesPage):
                 seen = self.cards()
                 if seen and all(card == (kind, space) for card in seen):
                     return
-                self.page.wait_for_timeout(500)
+                self.page.wait_for_timeout(waits().poll_interval)
             raise AssertionError(
                 f"Expected only {kind} cards for space {space}, listed: {sorted(set(seen or []))}"
             )
@@ -62,7 +63,7 @@ class HBCommunicationFiltersPage(HBTenantNotesPage):
     def email_compose_space_options(self) -> list[str]:
         """Send Email's "Space/Subject" options. The draft is closed with the
         window's X - nothing is sent."""
-        with allure.step("Send Email: Space/Subject options"):
+        with allure.step("Send email: Space/Subject options"):
             self._compose_button().click()
             send_email = self._menu_items().filter(has_text=re.compile(r"^\s*Send Email\s*$")).first
             expect(send_email).to_be_visible(timeout=self.timeout)

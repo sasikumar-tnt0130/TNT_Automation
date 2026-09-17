@@ -1,5 +1,8 @@
 from configparser import ConfigParser
 
+import allure
+
+from common_utils.waits import waits
 from common_utils.wrapper_methods import log_method_exceptions
 from config.config_reader import EnvironmentConfig
 from pages.common.hb_login_page import HBLoginPage
@@ -12,7 +15,7 @@ from pages.mariposa.mp_unit_search_page import MPUnitSearchPage
 class LeaseConfigurationSetup:
     """Reusable Lease Configuration test scenarios, built on top of the
     Lease Configuration and Two-Step Rental page objects. Property
-    identity comes from config/environments.ini (one property per
+    identity comes from config/properties.ini (one property per
     environment) rather than a separate test-data JSON."""
 
     @log_method_exceptions
@@ -25,11 +28,11 @@ class LeaseConfigurationSetup:
         fms_property_name: str | None = None,
     ) -> None:
         # property_name/fms_property_name let a caller target a different
-        # property than environments.ini's single per-environment default
+        # property than properties.ini's single per-environment default
         # (e.g. disabling Two-Step/Clickwrap/Super Lease on whichever
         # property a specific pilot test happens to be using, without
         # that property becoming every other lease-configuration test's
-        # default too) - both fall back to environments.ini when omitted,
+        # default too) - both fall back to properties.ini when omitted,
         # so existing callers are unaffected.
         self.hb_login_page = hb_login_page
         self.app_config = app_config
@@ -47,7 +50,7 @@ class LeaseConfigurationSetup:
                 f"No property configured for environment "
                 f"{environment_config.name!r} - set "
                 "lease_configuration_property_name and fms_property_name "
-                "in config/environments.ini, or pass property_name/"
+                "in config/properties/<env>.ini, or pass property_name/"
                 "fms_property_name explicitly."
             )
         self.lease_configuration = self.build_lease_configuration_page()
@@ -145,29 +148,41 @@ class LeaseConfigurationSetup:
         #
         # Per explicit instruction: check the current configuration
         # first and bypass the whole disable sequence when Clickwrap/
-        # Super Lease/Two-Step already all match - clear_cache() still
-        # runs even then (see set_two_step's own tail comment for why
-        # an already-matching admin state alone isn't reason enough to
-        # skip it - the storefront can still be serving a stale value).
+        # Super Lease/Two-Step already all match - no Clear Cache when
+        # nothing was Saved (Clear Cache only after real changes).
         # open_state_compliance_tools() must run before the check
         # itself - see disable_clickwrap_and_super_lease's comment for
         # why (is_*_enabled() needs property_name already seeded).
-        self.open_state_compliance_tools()
-        already_configured = (
-            not self.lease_configuration.is_clickwrap_signature_enabled()
-            and not self.lease_configuration.is_super_lease_enabled()
-            and not self.two_step_rental_page.is_two_step_enabled(self.fms_property_name)
-        )
-        if already_configured:
-            self.two_step_rental_page.nav.clear_cache()
-        else:
-            self.lease_configuration.set_clickwrap_signature(False)
-            self.lease_configuration.set_super_lease(False)
-            self.two_step_rental_page.set_two_step(self.fms_property_name, False)
+        with allure.step(
+            f"Ensure Two-Step, Clickwrap, and Super Lease are off "
+            f"({self.fms_property_name})"
+        ):
+            self.open_state_compliance_tools()
+            already_configured = (
+                not self.lease_configuration.is_clickwrap_signature_enabled()
+                and not self.lease_configuration.is_super_lease_enabled()
+                and not self.two_step_rental_page.is_two_step_enabled(
+                    self.fms_property_name
+                )
+            )
+            if already_configured:
+                with allure.step("Skip Saves (already off)"):
+                    pass
+            else:
+                with allure.step(
+                    "Disable Clickwrap, Super Lease, then Two-Step"
+                ):
+                    self.lease_configuration.set_clickwrap_signature(False)
+                    self.lease_configuration.set_super_lease(False)
+                    self.two_step_rental_page.set_two_step(
+                        self.fms_property_name, False
+                    )
 
-        self.lease_configuration.assert_clickwrap_signature_disabled()
-        self.lease_configuration.assert_super_lease_disabled()
-        self.two_step_rental_page.assert_two_step_disabled(self.fms_property_name)
+            self.lease_configuration.assert_clickwrap_signature_disabled()
+            self.lease_configuration.assert_super_lease_disabled()
+            self.two_step_rental_page.assert_two_step_disabled(
+                self.fms_property_name
+            )
         # Per explicit instruction: the admin switch reading "disabled"
         # isn't enough on its own - the live storefront ("Facility
         # Reservation") has been seen still serving Two-Step afterward
@@ -294,17 +309,48 @@ class LeaseConfigurationSetup:
         #     )
 
     @log_method_exceptions
-    def set_landing_page_layout(self, layout: str) -> None:
+    def set_landing_page_layout(self, layout: str, *, clear_cache: bool = True) -> None:
         """Default / Grid View / List View - controls the storefront's
         unit-listing page rendering (see MPUnitSearchPage.select_unit)."""
-        self.two_step_rental_page.set_landing_page_layout(self.fms_property_name, layout)
+        self.two_step_rental_page.set_landing_page_layout(
+            self.fms_property_name, layout, clear_cache=clear_cache
+        )
 
     @log_method_exceptions
-    def set_value_tier_layout(self, layout: str) -> None:
+    def set_value_tier_layout(self, layout: str, *, clear_cache: bool = True) -> None:
         """Grid View / List View (no "Default") - controls the
         protection-plan tier-selection dialog's rendering (see
         MPUnitSearchPage.select_unit's protection-plan step)."""
-        self.two_step_rental_page.set_value_tier_layout(self.fms_property_name, layout)
+        self.two_step_rental_page.set_value_tier_layout(
+            self.fms_property_name, layout, clear_cache=clear_cache
+        )
+
+    @log_method_exceptions
+    def set_landing_and_value_tier_layouts(
+        self, landing_layout: str, tier_layout: str
+    ) -> None:
+        """Configure Landing Page Layout + Value Tier Layout together.
+
+        When Landing is Default, FMS hides the Value Tier Layout control
+        (walked 2026-09-16 stage/Garden Grove). Set the tier first while
+        Landing is still Grid/List, then switch Landing to Default so the
+        stored tier setting still applies to the protection-plan dialog.
+
+        Clears website cache once at the end (not after every Save) so
+        repeated Clear Cache clicks do not pile up in v-btn--loading.
+        """
+        with allure.step(
+            f"Set Landing Page Layout to {landing_layout} and "
+            f"Value Tier Layout to {tier_layout} ({self.fms_property_name})"
+        ):
+            if landing_layout == "Default":
+                # Any non-Default landing re-exposes Value Tier Layout.
+                self.set_landing_page_layout("Grid View", clear_cache=False)
+                self.set_value_tier_layout(tier_layout, clear_cache=False)
+                self.set_landing_page_layout("Default", clear_cache=True)
+                return
+            self.set_landing_page_layout(landing_layout, clear_cache=False)
+            self.set_value_tier_layout(tier_layout, clear_cache=True)
 
     @log_method_exceptions
     def set_advance_reservation_days(self, days: int) -> None:
@@ -321,28 +367,55 @@ class LeaseConfigurationSetup:
         # Per explicit instruction: check the current configuration
         # first and bypass the force-disable-then-reenable Two-Step
         # dance (plus Super Lease/Clickwrap) when everything already
-        # matches the requested state. clear_cache() still runs even
-        # then - see disable_two_step_clickwrap_and_super_lease's
-        # mirror-image comment for why an already-matching admin state
-        # alone isn't reason enough to skip it. open_state_compliance_
-        # tools() must run before the check itself - see
-        # disable_clickwrap_and_super_lease's comment for why.
-        self.open_state_compliance_tools()
-        already_configured = (
-            self.lease_configuration.is_super_lease_enabled()
-            and self.lease_configuration.is_clickwrap_signature_enabled()
-            and self.two_step_rental_page.is_two_step_enabled(self.fms_property_name)
-        )
-        if already_configured:
-            self.two_step_rental_page.nav.clear_cache()
-        else:
-            self.lease_configuration.set_super_lease(True)
-            self.lease_configuration.set_clickwrap_signature(True)
-            self.two_step_rental_page.set_two_step(self.fms_property_name, True)
+        # matches the requested state - no Clear Cache when nothing
+        # was Saved. open_state_compliance_tools() must run before the
+        # check itself - see disable_clickwrap_and_super_lease's
+        # comment for why.
+        with allure.step(
+            f"Ensure Two-Step, Clickwrap, and Super Lease are on "
+            f"({self.fms_property_name})"
+        ):
+            self.open_state_compliance_tools()
+            already_configured = (
+                self.lease_configuration.is_super_lease_enabled()
+                and self.lease_configuration.is_clickwrap_signature_enabled()
+                and self.two_step_rental_page.is_two_step_enabled(
+                    self.fms_property_name
+                )
+            )
+            if already_configured:
+                with allure.step("Skip Saves (already on)"):
+                    pass
+            else:
+                with allure.step(
+                    "Enable Super Lease, Clickwrap, then Two-Step"
+                ):
+                    self.lease_configuration.set_super_lease(True)
+                    self.lease_configuration.set_clickwrap_signature(True)
+                    # Live 2026-09-17 (uat_storoutlet / Chula Vista): FMS
+                    # still shows the Superlease/Clickwrap requirements copy
+                    # and will not stay ON until Website Clear Cache runs and
+                    # ~5s elapses. The switch is often still "enabled" in the
+                    # DOM (not input[disabled]) while eligibility lags — so
+                    # flush + short wait before toggling Two-Step.
+                    with allure.step(
+                        "Flush website cache so FMS sees Superlease/Clickwrap"
+                    ):
+                        self.two_step_rental_page.nav.clear_cache(force=True)
+                        # Backend eligibility lag after Clear Cache - live
+                        # 2026-09-17: ~5s often enough, but Superlease stale
+                        # warning still hit after waits().long; give FMS more
+                        # time before the first Two-Step toggle attempt.
+                        self.hb_login_page.page.wait_for_timeout(20000)
+                    self.two_step_rental_page.set_two_step(
+                        self.fms_property_name, True
+                    )
 
-        self.two_step_rental_page.assert_two_step_enabled(self.fms_property_name)
-        self.lease_configuration.assert_super_lease_enabled()
-        self.lease_configuration.assert_clickwrap_signature_enabled()
+            self.two_step_rental_page.assert_two_step_enabled(
+                self.fms_property_name
+            )
+            self.lease_configuration.assert_super_lease_enabled()
+            self.lease_configuration.assert_clickwrap_signature_enabled()
         # See disable_two_step_clickwrap_and_super_lease's mirror-image
         # comment - the admin switch reading "enabled" isn't enough on
         # its own, so this only runs when the caller supplies its own

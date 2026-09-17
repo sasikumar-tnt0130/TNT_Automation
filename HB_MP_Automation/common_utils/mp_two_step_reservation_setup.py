@@ -3,12 +3,13 @@ from configparser import ConfigParser
 from datetime import date
 from pathlib import Path
 
-from playwright.sync_api import Page
+from playwright.sync_api import Page, expect
 
 from common_utils.mailinator_utils import (
     find_email_link,
     get_email_plain_text,
     get_email_text,
+    latest_email_time,
     wait_for_email,
 )
 from common_utils.mp_rental_emails import assert_rental_confirmation_emails
@@ -18,7 +19,7 @@ from common_utils.wrapper_methods import (
     save_confirmation_screenshot,
     save_email_screenshot,
 )
-from config.config_reader import EnvironmentConfig
+from config.config_reader import EnvironmentConfig, PropertyConfig
 from pages.mariposa.mp_unit_search_page import MPUnitSearchPage
 from pages.mariposa.mp_two_step_reservation_form_page import MPTwoStepReservationFormPage
 
@@ -35,10 +36,10 @@ class MPTwoStepReservationSetup:
     MPLegacyReservationSetup, so a failure identifies which flow broke
     immediately - see MPTwoStepReservationFormPage's own docstring.
 
-    The property to search for comes from environment_config, same as
-    MPLegacyReservationSetup - the same property Legacy tests run against.
-    The caller is expected to have already configured it for Two-Step
-    (see test_two_step_individual_reservation.py, which calls
+    The storefront property comes from properties.ini two_step_property
+    (pass property_config= or rely on environment_config.two_step_property).
+    The caller is expected to have already configured that facility for
+    Two-Step (see test_two_step_reservation.py, which calls
     LeaseConfigurationSetup.enable_two_step_clickwrap_and_super_lease()
     first) rather than assuming a fixed external state - but the
     storefront has been observed serving Legacy's form anyway
@@ -56,6 +57,8 @@ class MPTwoStepReservationSetup:
         environment_config: EnvironmentConfig,
         app_config: ConfigParser,
         property_url: str | None = None,
+        test_name: str | None = None,
+        property_config: PropertyConfig | None = None,
     ) -> None:
         timeout = app_config.getint("browser", "timeout")
         self.environment_config = environment_config
@@ -65,9 +68,16 @@ class MPTwoStepReservationSetup:
         )
         # Computed once here, not per-screenshot - see
         # MPLegacyReservationSetup's mirror-image comment.
-        self.confirmation_dir = confirmation_dir_for_current_test(REPORTS_DIR)
-        self.mp_state = environment_config.mp_state
-        self.mp_city = environment_config.mp_city
+        # test_name / HB_MP_CURRENT_TEST keep the folder named after the
+        # pytest case instead of "unknown".
+        self.confirmation_dir = confirmation_dir_for_current_test(
+            REPORTS_DIR, test_name=test_name
+        )
+        # Prefer an explicit two_step_property PropertyConfig - flat
+        # environment_config.mp_* fields are the Legacy legacy_property.
+        prop = property_config or environment_config.two_step_property
+        self.mp_state = prop.mp_state if prop else environment_config.mp_state
+        self.mp_city = prop.mp_city if prop else environment_config.mp_city
         # See MPLegacyReservationSetup's mirror-image comment - pass the
         # property_landing_page_url fixture's discovered URL for this
         # suite's own property (Lightning Storage/Rutland, not
@@ -75,12 +85,20 @@ class MPTwoStepReservationSetup:
         self.property_url = property_url
         # See MPLegacyReservationSetup's space_number.
         self.space_number: str | None = None
+        self.move_in_date: date | None = None
+        # Set by rent_reserved_unit just before Get Access - see there.
+        self.get_access_baseline: int | None = None
 
     @log_method_exceptions
-    def reserve_unit(self, guest: dict, renting_as_business: bool = False) -> str:
+    def reserve_unit(
+        self,
+        guest: dict,
+        renting_as_business: bool = False,
+        days_from_today: int = 1,
+    ) -> str:
         """Search, select a unit, and submit the Two-Step reservation
-        form ("Reserve Now"). Returns the reservation code shown on
-        confirmation."""
+        form ("Reserve Now"). Returns the reservation code. Sets
+        self.move_in_date to the date selected on the form."""
         if self.property_url:
             self.rental_page.open_property_page(self.property_url)
         else:
@@ -107,13 +125,14 @@ class MPTwoStepReservationSetup:
                 "property for Two-Step - a known intermittent "
                 "storefront-side routing issue, not a config problem."
             )
-        self.two_step_page.reserve_unit(
+        self.move_in_date = self.two_step_page.reserve_unit(
             email=guest["email"],
             mobile=guest["mobile"],
             first_name=guest["first_name"],
             last_name=guest["last_name"],
             renting_as_business=renting_as_business,
             business_name=business_name,
+            days_from_today=days_from_today,
         )
         reservation_code = self.two_step_page.get_reservation_code()
         save_confirmation_screenshot(
@@ -125,16 +144,17 @@ class MPTwoStepReservationSetup:
 
     @log_method_exceptions
     def assert_confirmation_email(
-        self, guest: dict, reservation_code: str, property_name: str | None = None
+        self,
+        guest: dict,
+        reservation_code: str,
+        property_name: str | None = None,
+        move_in_date: date | None = None,
     ) -> float | None:
-        """Same check as MPLegacyReservationSetup.assert_confirmation_email -
-        confirms the confirmation email actually arrived on the guest's
-        Mailinator inbox, and that its content matches this reservation.
-        Pass property_name when the reservation was made on a property
-        other than the environment's default (e.g. via property_url).
-        Returns the email's "Web Rental Rate" (None if it shows none)."""
+        """Same check as MPLegacyReservationSetup.assert_confirmation_email.
+        Optionally asserts the move-in date. Returns email Web Rental Rate."""
         message = wait_for_email(guest["email"], subject_contains="Reservation Confirmation")
         body = get_email_text(message)
+        plain = get_email_plain_text(message)
         save_email_screenshot(
             self.two_step_page.page.context,
             body,
@@ -151,13 +171,42 @@ class MPTwoStepReservationSetup:
             assert property_name in body, (
                 f"Property name {property_name!r} not found in confirmation email body"
             )
-        # "Web Rental Rate $ 100.00" (confirmed live 2026-09-13, stage/
-        # Rutland) - 8900 falls back to it when the rental form's Lease
-        # Summary shows no rate, as on stage.
+        check_date = move_in_date or self.move_in_date
+        if check_date:
+            # Prefer plain text: HTML parts use &nbsp; between month/day
+            # (get_email_plain_text docstring). Also accept MM/DD/YYYY as on
+            # the Two-Step thank-you page.
+            date_patterns = [
+                rf"{check_date:%b}\s+0?{check_date.day},?\s+{check_date.year}",
+                rf"{check_date:%B}\s+0?{check_date.day},?\s+{check_date.year}",
+                rf"{check_date:%m}/{check_date:%d}/{check_date:%Y}",
+                rf"{check_date.month}/{check_date.day}/{check_date.year}",
+            ]
+            assert any(re.search(pattern, plain, re.I) for pattern in date_patterns), (
+                f"Move-in date {check_date:%b %d, %Y} not found in confirmation email body"
+            )
         rate = re.search(
-            r"Web Rental Rate\s*\$\s*([\d,]+(?:\.\d+)?)", get_email_plain_text(message)
+            r"Web Rental Rate\s*\$\s*([\d,]+(?:\.\d+)?)", plain
         )
         return float(rate.group(1).replace(",", "")) if rate else None
+
+    @log_method_exceptions
+    def assert_confirmation_shows_move_in_date(self, move_in_date: date | None = None) -> None:
+        check_date = move_in_date or self.move_in_date
+        if not check_date:
+            raise AssertionError("No move_in_date to assert on the confirmation page")
+        body = self.two_step_page.page.locator("body")
+        patterns = [
+            rf"{check_date:%b} 0?{check_date.day}, {check_date.year}",
+            rf"{check_date:%m}/{check_date:%d}/{check_date:%Y}",
+            rf"{check_date.month}/{check_date.day}/{check_date.year}",
+        ]
+        matched = any(
+            re.search(pattern, body.inner_text(), re.I) for pattern in patterns
+        )
+        assert matched, (
+            f"Move-in date {check_date:%b %d, %Y} not found on confirmation page"
+        )
 
     @log_method_exceptions
     def open_rental_from_email(self, guest: dict) -> dict:
@@ -168,9 +217,7 @@ class MPTwoStepReservationSetup:
         page's Lease Summary. Nothing is submitted; Pay Now is never
         clicked."""
         message = wait_for_email(guest["email"], subject_contains="Reservation Confirmation")
-        self.two_step_page.page.goto(
-            find_email_link(message, "Rent Now"), wait_until="domcontentloaded"
-        )
+        self.two_step_page.open_rental_link(find_email_link(message, "Rent Now"))
         return self.two_step_page.read_lease_summary()
 
     @log_method_exceptions
@@ -219,6 +266,7 @@ class MPTwoStepReservationSetup:
                 name_on_card=payer_name,
                 zip_code=self.environment_config.card_zip_code,
                 enroll_autopay=enroll_autopay,
+                billing_address=rental_data,
             )
         space_number = lease_summary["space_number"]
         self.two_step_page.assert_rental_complete(space_number)
@@ -227,7 +275,18 @@ class MPTwoStepReservationSetup:
             self.confirmation_dir / f"rental-{space_number}.png",
             allure_name=f"rental-confirmation-{space_number}",
         )
+        # The inbox's newest message time just before Get Access, so the
+        # rental email check can tell the email Get Access sends from Pay
+        # Now's (see mp_rental_emails).
+        self.get_access_baseline = latest_email_time(guest["email"])
         self.two_step_page.verify_id_later_and_get_access(rental_data)
+        # The second step's confirmation - "Your space is ready!" after Get
+        # Access - next to the first step's (rental-<space>.png).
+        save_confirmation_screenshot(
+            self.two_step_page.page,
+            self.confirmation_dir / f"get-access-{space_number}.png",
+            allure_name=f"get-access-confirmation-{space_number}",
+        )
         return lease_summary
 
     @log_method_exceptions
@@ -247,7 +306,9 @@ class MPTwoStepReservationSetup:
         gone - whose Account Summary lists the name, "Unit Space <space>",
         "Move-In Date: Sep 13, 2026", each charge and "Total Cost To
         Move-In $ 112.40"; with autopay, "<property> Auto Payment
-        Confirmation" arrives too."""
+        Confirmation" arrives too. Two-Step sends a second Rental
+        Confirmation after Get Access - get_access_baseline tells the two
+        apart (see mp_rental_emails)."""
         assert_rental_confirmation_emails(
             self.two_step_page.page.context,
             self.confirmation_dir,
@@ -257,4 +318,5 @@ class MPTwoStepReservationSetup:
             amount_paid,
             security_deposit,
             autopay,
+            get_access_baseline=self.get_access_baseline,
         )

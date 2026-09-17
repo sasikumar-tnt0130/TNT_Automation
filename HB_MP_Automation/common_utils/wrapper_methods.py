@@ -15,19 +15,33 @@ Parameters = ParamSpec("Parameters")
 ReturnValue = TypeVar("ReturnValue")
 
 
-def confirmation_dir_for_current_test(reports_dir: Path) -> Path:
+# Set by conftest's pytest_runtest_setup from request.node.name so
+# reservation setups (and any other mid-test caller) get a stable
+# folder name even when PYTEST_CURRENT_TEST is missing.
+CURRENT_TEST_ENV = "HB_MP_CURRENT_TEST"
+
+
+def confirmation_dir_for_current_test(
+    reports_dir: Path, test_name: str | None = None
+) -> Path:
     """reports/confirmations/<test name>-<timestamp>/ for whichever
-    pytest test is currently running, read from the PYTEST_CURRENT_TEST
-    env var pytest sets for the duration of a test (no fixture/
-    parameter plumbing needed through every call site). Groups a
-    reservation's confirmation + email screenshots under one folder per
-    test instead of a flat pile keyed only by reservation code, so
-    which test produced which pair is obvious without cross-referencing
-    Allure. Callers compute this once (e.g. in __init__) and reuse it -
-    calling again mid-test would mint a new timestamp and split the
-    pair across two folders."""
-    current_test = os.environ.get("PYTEST_CURRENT_TEST", "unknown")
-    test_name = current_test.split("::")[-1].split(" ")[0]
+    pytest test is currently running.
+
+    Prefer an explicit `test_name` (e.g. request.node.name). Otherwise
+    use HB_MP_CURRENT_TEST (set by conftest from the pytest item name),
+    then PYTEST_CURRENT_TEST. Only falls back to \"unknown\" outside a
+    pytest run (e.g. a walk script). Callers compute this once (e.g.
+    in __init__) and reuse it - calling again mid-test would mint a
+    new timestamp and split screenshots across two folders."""
+    if not test_name:
+        test_name = os.environ.get(CURRENT_TEST_ENV, "").strip()
+    if not test_name:
+        current_test = os.environ.get("PYTEST_CURRENT_TEST", "")
+        # PYTEST_CURRENT_TEST looks like
+        # "path/to/test.py::Class::test_name[param] (call)".
+        test_name = (
+            current_test.split("::")[-1].split(" ")[0] if current_test else "unknown"
+        )
     test_name = re.sub(r"[^A-Za-z0-9_.\[\]-]+", "_", test_name)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     return reports_dir / "confirmations" / f"{test_name}-{timestamp}"
@@ -49,21 +63,24 @@ def save_confirmation_screenshot(page: Page, path: Path, allure_name: str) -> No
 def save_email_screenshot(
     context: BrowserContext, html: str, path: Path, allure_name: str
 ) -> None:
-    """Renders a Mailinator email's HTML body in a throwaway page (a new
-    tab in the same browser context, not the caller's own page - the
-    caller's page is usually still mid-flow, e.g. about to resume the
-    reservation into a rental) and screenshots it, for the same
-    visual-record reason as save_confirmation_screenshot. Mailinator's
-    own API (see mailinator_utils.wait_for_email) is a plain HTTP
-    fetch, not a live page - there's nothing to screenshot without
-    rendering the body somewhere first."""
+    """Renders a Mailinator email's HTML body and screenshots it.
+
+    Uses a throwaway context with no video recording so the tab does not
+    split the test's single Playwright execution video (Playwright writes
+    one .webm per page in a recording context).
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    email_page = context.new_page()
+    browser = context.browser
+    scratch = browser.new_context() if browser is not None else None
+    email_page = scratch.new_page() if scratch is not None else context.new_page()
     try:
         email_page.set_content(html, wait_until="load")
         email_page.screenshot(path=str(path), full_page=True)
     finally:
-        email_page.close()
+        if scratch is not None:
+            scratch.close()
+        else:
+            email_page.close()
     allure.attach(
         path.read_bytes(), name=allure_name, attachment_type=allure.attachment_type.PNG
     )

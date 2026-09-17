@@ -3,6 +3,7 @@ from datetime import date, timedelta
 
 import allure
 from playwright.sync_api import Page, expect
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from common_utils.wrapper_methods import first_visible, log_method_exceptions
@@ -16,6 +17,7 @@ from pages.mariposa.mp_rental_payment_form import (
     tick_agreement,
     tick_checkbox,
 )
+from common_utils.waits import waits
 
 
 class MPTwoStepReservationFormPage:
@@ -60,15 +62,23 @@ class MPTwoStepReservationFormPage:
         if cookie_dialog_accept.count() > 0 and cookie_dialog_accept.first.is_visible():
             cookie_dialog_accept.first.click()
 
+        # Skip while a real dialog is open - same as
+        # MPUnitSearchPage._dismiss_banners (2026-09-17: Accept under
+        # tier-section-modal-mobile times out).
         mobile_cookie_popup = self.page.locator(".cookie-content-wrapper.mobile-popup")
-        if mobile_cookie_popup.count() > 0 and mobile_cookie_popup.first.is_visible():
+        dialog_open = self.page.get_by_role("dialog").count() > 0
+        if (
+            not dialog_open
+            and mobile_cookie_popup.count() > 0
+            and mobile_cookie_popup.first.is_visible()
+        ):
             mobile_accept = mobile_cookie_popup.first.locator(".okay-button-mobile")
             if mobile_accept.count() > 0 and mobile_accept.first.is_visible():
                 mobile_accept.first.click()
             else:
                 mobile_cookie_popup.first.locator(".icon-close-white").first.click()
 
-        if self.page.get_by_role("dialog").count() == 0:
+        if not dialog_open:
             cookie_accept = self.page.get_by_text("Accept", exact=True)
             if cookie_accept.count() > 0 and cookie_accept.first.is_visible():
                 cookie_accept.first.click()
@@ -80,35 +90,59 @@ class MPTwoStepReservationFormPage:
             chat_widget_close.first.click()
 
     @log_method_exceptions
-    def select_move_in_date(self, days_from_today: int = 1) -> None:
-        """This form's "Select a Move-in Date" field defaults to today
-        and opens a calendar picker rather than accepting free text -
-        selects a future date (tomorrow by default) instead of leaving
-        it on today. Confirmed live (2026-09-08, stage): unlike
-        MPLegacyReservationFormPage's own version of this field (a real
-        <input role="textbox">), this consolidated form renders it as
-        a plain <span id="reservationDate" aria-label="move in date">
-        - not a form control at all, so get_by_role("textbox", ...)
-        never matches it. #reservationDate is otherwise the same
-        field/calendar-picker interaction (same #calendar_modal, same
-        day-cell labeling) as the Legacy version - see its own
-        docstring. Doesn't handle the target date falling in a
-        different calendar month than the one the picker opens to (not
-        needed for a same-month offset like "tomorrow")."""
+    def select_move_in_date(self, days_from_today: int = 1) -> date:
+        """Pick a future move-in date on the Two-Step #reservationDate calendar."""
         with allure.step(f"Select move-in date: {days_from_today} day(s) from today"):
             move_in_date = self.page.locator("#reservationDate")
             move_in_date.click(force=True)
-
-            target_date = date.today() + timedelta(days=days_from_today)
-            target_label = (
-                target_date.strftime("%A, %B ") + str(target_date.day) + ","
-            )
-            target_cell = self.page.get_by_label(target_label, exact=False).last
-            expect(target_cell).to_be_visible(timeout=self.timeout)
-            target_cell.click()
+            target_date = date.today() + timedelta(days=max(days_from_today, 1))
+            self._click_calendar_day(target_date)
             expect(self.page.locator("#calendar_modal")).to_be_hidden(
                 timeout=self.timeout
             )
+            return target_date
+
+    def _click_calendar_day(self, target_date: date) -> None:
+        """Click the day cell; skip grayed-out days outside the advance window.
+
+        Same V-Calendar behavior as Legacy (live 2026-09-16): days past the
+        configured advance window keep an aria-label but use vc-text-gray-400
+        and do not dismiss #calendar_modal when clicked.
+        """
+        target_label = target_date.strftime("%A, %B ") + str(target_date.day) + ","
+        calendar = self.page.locator("#calendar_modal")
+        expect(calendar).to_be_visible(timeout=self.timeout)
+        for _ in range(14):
+            cell = self.page.get_by_label(target_label, exact=False).last
+            try:
+                if cell.count() > 0 and cell.is_visible():
+                    classes = cell.get_attribute("class") or ""
+                    if "vc-text-gray-400" in classes:
+                        raise AssertionError(
+                            f"Calendar day {target_label!r} is outside the "
+                            f"advance-reservation window (grayed out). "
+                            f"Modal: {calendar.inner_text()[:200]!r}"
+                        )
+                    cell.click()
+                    return
+            except AssertionError:
+                raise
+            except Exception:
+                pass
+            next_btn = calendar.locator(
+                ".flatpickr-next-month, .datepicker-next, .next-month, "
+                "[aria-label*='Next' i], .icon-arrow-right, .icon-right"
+            ).first
+            if next_btn.count() == 0 or not next_btn.is_visible():
+                next_btn = calendar.get_by_role(
+                    "button", name=re.compile(r"next|›|»", re.I)
+                ).first
+            if next_btn.count() == 0:
+                break
+            next_btn.click()
+        raise AssertionError(
+            f"Calendar day {target_label!r} not found in #calendar_modal"
+        )
 
     @log_method_exceptions
     def reserve_unit(
@@ -119,15 +153,14 @@ class MPTwoStepReservationFormPage:
         last_name: str,
         renting_as_business: bool = False,
         business_name: str | None = None,
-    ) -> None:
+        days_from_today: int = 1,
+    ) -> date:
         with allure.step("Wait for the reservation form to load"):
             self._dismiss_banners()
             expect(
                 self.page.get_by_role("textbox", name="Email *")
             ).to_be_visible(timeout=self.timeout)
             self._dismiss_banners()
-
-        self.select_move_in_date()
 
         if renting_as_business:
             with allure.step(f"Fill business information: {business_name}"):
@@ -144,6 +177,13 @@ class MPTwoStepReservationFormPage:
                 )
                 self.page.get_by_role("textbox", name="Business Phone").fill(mobile)
                 self.page.get_by_role("textbox", name="Business Email").fill(email)
+
+        # After the RAB checkbox: confirmed 2026-09-17 (uat_storoutlet/
+        # Bellflower) that ticking "I am renting as a business" resets
+        # #reservationDate back to today, so a date picked beforehand
+        # never reaches the confirmation email (test expected Sep 18,
+        # email had Sep 17).
+        move_in_date = self.select_move_in_date(days_from_today)
 
         with allure.step("Fill and submit the reservation form"):
             self._dismiss_banners()
@@ -203,7 +243,7 @@ class MPTwoStepReservationFormPage:
                         with self.page.expect_response(
                             lambda response: "/validate-phone/" in response.url
                             and digits in re.sub(r"%[0-9A-Fa-f]{2}|\D", "", response.url),
-                            timeout=10000,
+                            timeout=waits().medium,
                         ):
                             field.fill(field_value)
                     except PlaywrightTimeoutError:
@@ -234,6 +274,7 @@ class MPTwoStepReservationFormPage:
                     "the availability of your space' page instead of a "
                     f"confirmed reservation (no code, no email): {self.page.url}"
                 )
+        return move_in_date
 
     @log_method_exceptions
     def get_reservation_code(self) -> str:
@@ -294,8 +335,13 @@ class MPTwoStepReservationFormPage:
     def _phone_summary_snapshot(self) -> dict:
         """The phone layout's visible summary block, read from its text into
         the shape of the sidebar's snapshot (see read_lease_summary)."""
+        # uat labels the charges "Monthly Rent"; stage's summary has no such
+        # label - its first charge is "Rent (09/15/2026 - 10/14/2026)" and it
+        # has no "Total:" row, only "Total Cost to Move-in:" (2026-09-15) -
+        # so the block is the nearest one holding "Rent", the charges start
+        # at the first "Rent (" and end at "Total:" or "Total Cost to Move-in".
         text = self._phone_summary_label().locator(
-            "xpath=ancestor-or-self::*[contains(., 'Monthly Rent')][1]"
+            "xpath=ancestor-or-self::*[contains(., 'Rent')][1]"
         ).inner_text()
         space = re.search(r"#\S+\s*\|", text)
         if space:
@@ -303,8 +349,13 @@ class MPTwoStepReservationFormPage:
         else:
             candidates = self.page.get_by_text(re.compile(r"^#\w+$"))
             space_text = first_visible(candidates).inner_text() if candidates.count() else ""
-        rows = re.split(r"monthly rent", text, maxsplit=1, flags=re.I)[-1]
-        rows = re.split(r"\btotal:", rows, maxsplit=1, flags=re.I)[0]
+        first_charge = re.search(r"\bRent\s*\(", text)
+        rows = (
+            text[first_charge.start():]
+            if first_charge
+            else re.split(r"monthly rent", text, maxsplit=1, flags=re.I)[-1]
+        )
+        rows = re.split(r"\btotal:|total cost to move-in", rows, maxsplit=1, flags=re.I)[0]
         total = re.search(r"total cost to move-in:\s*(-?\s*\$\s*[\d,]+(?:\.\d+)?)", text, re.I)
         return {
             "text": text,
@@ -345,7 +396,7 @@ class MPTwoStepReservationFormPage:
         Tax $ 0.00 Total: $52.00 Total Cost to Move-in: $52.00". Only its aria
         snapshot was captured, not its markup, so on a phone that block is
         read from its visible text."""
-        with allure.step("Read Lease Summary"):
+        with allure.step("Read the lease summary"):
             if (self.page.viewport_size or {}).get("width", 1920) < 768:
                 self._wait_for_phone_summary()
                 read_summary = self._phone_summary_snapshot
@@ -363,7 +414,7 @@ class MPTwoStepReservationFormPage:
                 readings.append(read_summary()["total"].strip() or None)
                 if readings[-1] and len(readings) >= 6 and len(set(readings[-6:])) == 1:
                     break
-                self.page.wait_for_timeout(500)
+                self.page.wait_for_timeout(waits().poll_interval)
             else:
                 raise AssertionError(f"Lease Summary total never settled: {readings[-8:]}")
 
@@ -407,6 +458,7 @@ class MPTwoStepReservationFormPage:
         name_on_card: str,
         zip_code: str,
         enroll_autopay: bool = True,
+        billing_address: dict | None = None,
     ) -> None:
         """The resumed rental page's Payment Method section. Confirmed live
         (2026-09-13, uat_storoutlet/Chula Vista): "Autopay Enrollment"
@@ -426,10 +478,7 @@ class MPTwoStepReservationFormPage:
             "Pay the rental by credit card" + (" with autopay" if enroll_autopay else "")
         ):
             self._dismiss_cookie_banner()
-            autopay = self.page.locator("#auto-debit")
-            if autopay.is_checked() != enroll_autopay:
-                self.page.locator('label[for="auto-debit"]').first.click()
-            expect(autopay).to_be_checked(checked=enroll_autopay, timeout=self.timeout)
+            set_autopay(self.page, self.timeout, enroll_autopay)
             card_method = self.page.locator('input[type="radio"][value="card"]')
             if card_method.count() > 0 and not card_method.first.is_checked():
                 self.page.locator('label:has(input[type="radio"][value="card"])').first.click()
@@ -452,6 +501,12 @@ class MPTwoStepReservationFormPage:
             billing_zip = self.page.locator("#billingZip")
             if billing_zip.count() > 0:
                 billing_zip.fill(zip_code)
+            # Authorize.Net (the non-Tenant-Payments gateway) needs the card's
+            # billing address (user, 2026-09-15) - filled as for ACH, when the
+            # form shows its "Billing Address" box (the Legacy form's pay_with
+            # already does this for cards).
+            if billing_address:
+                fill_billing_address(self.page, self.timeout, billing_address)
             tick_agreement(self.page, self.timeout)
             # Card with autopay as a business (2026-09-15, Chula Vista): Pay
             # Now met "Invalid Card Number" with the number field empty - the
@@ -460,8 +515,55 @@ class MPTwoStepReservationFormPage:
             for card_field, value in card_values:
                 if not self._card_field_holds(card_field, value):
                     self._type_card_field(card_field, value)
+            # The form fills itself in late (RAB walk, 2026-09-15), so
+            # autopay is checked again right before paying.
+            set_autopay(self.page, self.timeout, enroll_autopay, when="before Pay Now")
             self._watch_rental_response()
             self.page.get_by_role("button", name=re.compile(r"^Pay Now")).first.click()
+
+    @log_method_exceptions
+    def open_rental_link(self, url: str, attempts: int = 3) -> None:
+        """Opens the reservation email's "Rent Now" link. Seen once on stage
+        (2026-09-15, phone RAB with autopay - 7 other cases fine): the
+        storefront answered a well-formed link with "Looks like the page has
+        changed or moved. Please start again from home." - its reservation
+        data came back empty - so that page is reloaded after a pause, a
+        few times, before failing with a clear message."""
+        moved = self.page.get_by_text("Looks like the page has changed or moved")
+        rental_form = self.page.get_by_role("button", name=re.compile(r"^Pay Now|^Sign Agreements"))
+        for attempt in range(1, attempts + 1):
+            try:
+                self.page.goto(url, wait_until="domcontentloaded")
+                break
+            except (PlaywrightTimeoutError, PlaywrightError) as error:
+                # The email's link is a track.pstmrk.it redirect, so the
+                # navigation stalls on a network blip: confirmed live
+                # (2026-09-16, stage) as a 60 s Page.goto timeout here, with
+                # net::ERR_NETWORK_CHANGED on HB in the same run's clean-up.
+                if attempt == attempts:
+                    raise
+                allure.attach(
+                    f"{type(error).__name__}: {str(error)[:300]}",
+                    name=f"Rent Now link did not load (try {attempt})",
+                    attachment_type=allure.attachment_type.TEXT,
+                )
+                self.page.wait_for_timeout(10000)
+        for attempt in range(1, attempts + 1):
+            expect(rental_form.or_(moved).first).to_be_attached(timeout=self.timeout)
+            if not moved.first.is_visible():
+                return
+            allure.attach(
+                self.page.screenshot(full_page=True),
+                name=f"Rent Now: 'page has changed or moved' (try {attempt})",
+                attachment_type=allure.attachment_type.PNG,
+            )
+            if attempt < attempts:
+                self.page.wait_for_timeout(10000)
+                self.page.reload(wait_until="domcontentloaded")
+        raise AssertionError(
+            f"The storefront showed 'Looks like the page has changed or moved' for the "
+            f"reservation's Rent Now link {attempts} times: {url}"
+        )
 
     @log_method_exceptions
     def fill_business_representative(self, guest: dict, rental_data: dict) -> None:
@@ -497,6 +599,8 @@ class MPTwoStepReservationFormPage:
             enter_ach(self.page, self.timeout, name_on_account, routing_number, account_number)
             fill_billing_address(self.page, self.timeout, billing_address)
             tick_agreement(self.page, self.timeout)
+            # See pay_rental_by_card: autopay checked again right before paying.
+            set_autopay(self.page, self.timeout, enroll_autopay, when="before Pay Now")
             self._watch_rental_response()
             self.page.get_by_role("button", name=re.compile(r"^Pay Now")).first.click()
 
@@ -516,7 +620,7 @@ class MPTwoStepReservationFormPage:
         reformatted ("1234" -> "12 / 2034"), so it holds its value when its
         digits keep the month and end with the year's last two."""
         try:
-            text = card_field.input_value(timeout=5000)
+            text = card_field.input_value(timeout=waits().short)
         except Exception:
             return False
         if re.search(r"[•*●]", text):
@@ -542,9 +646,17 @@ class MPTwoStepReservationFormPage:
         status, and for an error its message fields only: a successful body
         carries a session token and signed document links, never kept."""
         self._rental_responses: list[dict] = []
+        # Every non-GET call after Pay Now as "METHOD status path" (ids
+        # hidden) - reported when no outcome shows (stage, 2026-09-15: Pay
+        # Now left the form in place for 4 minutes with no message).
+        self._writes_after_pay: list[str] = []
 
         def record(response) -> None:
-            if response.request.method != "POST" or not re.search(r"/rentals/?(\?|$)", response.url):
+            request = response.request
+            if request.method != "GET" and request.resource_type in ("xhr", "fetch"):
+                path = re.sub(r"/[A-Za-z0-9_\-]{12,}", "/<id>", response.url.split("?")[0])
+                self._writes_after_pay.append(f"{request.method} {response.status} {path}")
+            if request.method != "POST" or not re.search(r"/rentals/?(\?|$)", response.url):
                 return
             entry: dict = {"status": response.status}
             if response.status >= 400:
@@ -576,7 +688,21 @@ class MPTwoStepReservationFormPage:
             not_through = self.page.get_by_text("your rental did not go through", exact=False).first
             # Or Pay Now is refused on the form itself (2026-09-15).
             invalid_card = self.page.get_by_text("Invalid Card Number", exact=False).locator("visible=true").first
-            expect(confirmed.or_(not_through).or_(invalid_card).first).to_be_visible(timeout=self.timeout * 4)
+            try:
+                expect(confirmed.or_(not_through).or_(invalid_card).first).to_be_visible(timeout=self.timeout * 4)
+            except AssertionError:
+                pay_now = self.page.get_by_role("button", name=re.compile(r"^Pay Now"))
+                notices = self.page.locator(".v-snack__content, .toast, [role=alert], .alert").filter(
+                    visible=True
+                ).all_inner_texts()
+                raise AssertionError(
+                    f"No outcome {self.timeout * 4 / 1000:.0f} s after Pay Now - still on "
+                    f"{self.page.url.split('?')[0]}; Pay Now "
+                    f"{'still shown' if pay_now.count() and pay_now.first.is_visible() else 'gone'}; notices "
+                    f"{[' '.join(text.split())[:120] for text in notices]}; calls after Pay Now "
+                    f"{getattr(self, '_writes_after_pay', None)}; rentals responses "
+                    f"{getattr(self, '_rental_responses', None)}"
+                ) from None
             if invalid_card.is_visible():
                 raise AssertionError('Pay Now was refused: the card form shows "Invalid Card Number"')
             if not confirmed.is_visible():
@@ -599,7 +725,13 @@ class MPTwoStepReservationFormPage:
         autocomplete suggestion is picked - so they're filled directly -
         and the licence expiry input sits under its floating label, so it's
         filled rather than clicked. "Get Access" saves it all and then
-        disappears; no gate code is shown when ID is verified later."""
+        disappears; no gate code is shown when ID is verified later.
+        Renting as a business (confirmed live 2026-09-15, stage/Rutland), a
+        second required block, "Business Representative Information
+        Address" (#idbusiness_representative*), sits below the licence
+        fields; left empty, Get Access only shows "Address1 is required" etc.
+        and never saves. ZIP 92660 makes the site look the city up and
+        overwrite "Irvine" with "NEWPORT BEACH" in both address blocks."""
         with allure.step("Verify ID later and submit mailing address and licence"):
             self.page.get_by_role("button", name=re.compile(r"Verify ID Later")).click()
             mailing_address = self.page.get_by_role("heading", name="Mailing Address")
@@ -625,6 +757,17 @@ class MPTwoStepReservationFormPage:
             self.page.locator("#iddrivers_licensedrivers_license_expiration_date").fill(
                 rental_data["drivers_license_expiration"]
             )
+            representative_address1 = self.page.locator("#idbusiness_representativeaddress1")
+            if representative_address1.count() > 0 and representative_address1.is_visible():
+                with allure.step("Business representative address"):
+                    representative_address1.fill(rental_data["address1"])
+                    self.page.locator("#idbusiness_representativeaddress2").fill(rental_data["address2"])
+                    self.page.locator("#idbusiness_representativezip").fill(rental_data["zip"])
+                    self.page.locator("#idbusiness_representativecity").fill(rental_data["city"])
+                    self.page.locator("#idbusiness_representativestate").select_option(
+                        label=rental_data["state"]
+                    )
             get_access = self.page.get_by_role("button", name="Get Access")
             get_access.click()
             expect(get_access).to_be_hidden(timeout=self.timeout)
+            expect(self.page.get_by_text("Your space is ready!")).to_be_visible(timeout=self.timeout)

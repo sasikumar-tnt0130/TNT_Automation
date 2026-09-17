@@ -142,7 +142,8 @@ class MPWebsiteHomepagePage:
     def save(self) -> None:
         with allure.step("Save Website Homepage settings"):
             self.page.get_by_role("button", name="Save", exact=True).click()
-        self.nav.clear_cache()
+            self.nav.mark_website_cache_clear_pending()
+            self.nav.clear_cache()
 
     @log_method_exceptions
     def assert_descriptions_are_populated(self) -> None:
