@@ -1,9 +1,19 @@
 import re
 
+import allure
 from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError, expect
 
 from config.config_reader import EnvironmentConfig
 from common_utils.wrapper_methods import log_method_exceptions
+from common_utils.waits import waits
+
+
+# Transient HB login failures (rate limit / session / flaky auth).
+_LOGIN_ERROR = re.compile(
+    r"invalid|incorrect|unable to log|login failed|something went wrong|"
+    r"try again|authentication|unauthorized|error",
+    re.IGNORECASE,
+)
 
 
 class HBLoginPage:
@@ -81,13 +91,84 @@ class HBLoginPage:
         raise last_error
 
     @log_method_exceptions
+    def _login_error_visible(self) -> bool:
+        """True when a login-form error/alert is showing."""
+        for locator in (
+            self.page.locator(".v-alert").filter(visible=True),
+            self.page.locator(".error--text, .v-messages__message").filter(
+                visible=True
+            ),
+            self.page.get_by_role("alert").filter(visible=True),
+        ):
+            try:
+                if locator.count() == 0:
+                    continue
+                text = (locator.first.inner_text(timeout=500) or "").strip()
+                if text and _LOGIN_ERROR.search(text):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    @log_method_exceptions
+    def _still_on_login_form(self) -> bool:
+        try:
+            return self.login_button.is_visible() and self.username.is_visible()
+        except Exception:
+            return False
+
+    @log_method_exceptions
     def submit_login_credentials(self) -> None:
+        """Fill credentials and click Login; on login error, click Login again.
+
+        Transient HB auth failures sometimes leave the form up with an error
+        banner — retrying the Login click (after a short pause) recovers
+        without reopening the page.
+        """
+        expect(self.username).to_be_visible(timeout=self.timeout)
         self.username.fill(self.username_value)
         self.password.fill(self.password_value)
-        self.login_button.click()
+        max_attempts = 3
+        last_error: Exception | None = None
+        for attempt in range(max_attempts):
+            with allure.step(
+                "Click Login" + (f" (retry {attempt})" if attempt else "")
+            ):
+                expect(self.login_button).to_be_visible(timeout=self.timeout)
+                self.login_button.click()
+            try:
+                expect(self.page).to_have_url(
+                    re.compile(r"/dashboard"),
+                    timeout=waits().long if attempt == 0 else waits().medium,
+                )
+                return
+            except AssertionError as error:
+                last_error = error
+                if attempt == max_attempts - 1:
+                    break
+                if self._login_error_visible() or self._still_on_login_form():
+                    with allure.step(
+                        "Login error or form still shown — click Login again"
+                    ):
+                        self.page.wait_for_timeout(waits().short)
+                        if self._still_on_login_form():
+                            self.username.fill(self.username_value)
+                            self.password.fill(self.password_value)
+                        continue
+                break
+        if last_error is not None:
+            raise last_error
 
     @log_method_exceptions
     def assert_login_successful(self) -> None:
+        # submit_login_credentials already waits for /dashboard when it can;
+        # this is the final assert for callers that submit separately.
+        if self._still_on_login_form() or self._login_error_visible():
+            with allure.step("Login not complete — click Login again"):
+                if self._still_on_login_form():
+                    self.username.fill(self.username_value)
+                    self.password.fill(self.password_value)
+                self.login_button.click()
         expect(self.page).to_have_url(re.compile(r"/dashboard"), timeout=self.timeout)
         # Confirmed live: this dashboard's own background polling/
         # websocket traffic (task center counts, charm widgets, etc.)
@@ -102,6 +183,6 @@ class HBLoginPage:
         # environments their real networkidle; a busy one like this
         # gives up fast instead of burning the whole budget for nothing.
         try:
-            self.page.wait_for_load_state("networkidle", timeout=5000)
+            self.page.wait_for_load_state("networkidle", timeout=waits().short)
         except PlaywrightTimeoutError:
             pass

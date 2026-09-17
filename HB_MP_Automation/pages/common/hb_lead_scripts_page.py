@@ -5,6 +5,7 @@ from playwright.sync_api import Locator, Page, Response, expect
 
 from common_utils.wrapper_methods import log_method_exceptions
 from pages.common.hb_settings_navigation import HBSettingsNavigation
+from common_utils.waits import waits
 
 SCRIPT_HEADING = "Follow this script to gather information about the customer."
 # GET .../leads/properties/<property id>/lead-script/ - the property's saved script.
@@ -56,7 +57,7 @@ class HBLeadScriptsPage:
 
     @log_method_exceptions
     def open_lead_management(self) -> None:
-        with allure.step("Open Settings -> Lead Management"):
+        with allure.step("Open Settings → Lead Management"):
             self.nav.open_settings_panel()
             menu = self.page.locator(
                 ".setting-menu-list-inactive-color, .setting-menu-list-active-color",
@@ -74,7 +75,7 @@ class HBLeadScriptsPage:
 
     @log_method_exceptions
     def assert_landing_page(self) -> None:
-        with allure.step("Lead Management landing page: description and both tabs"):
+        with allure.step("Verify Lead Management landing page: description and both tabs"):
             expect(self._landing_text()).to_be_visible(timeout=self.timeout)
             for tab in ("Corporate Settings", "Property Settings"):
                 expect(self.page.get_by_role("tab", name=tab, exact=True)).to_be_visible(
@@ -103,7 +104,7 @@ class HBLeadScriptsPage:
             titles = self._panel_titles()
             if titles == expected_titles:
                 return
-            self.page.wait_for_timeout(500)
+            self.page.wait_for_timeout(waits().poll_interval)
         raise AssertionError(
             f"Lead Management panels are {titles}, expected {expected_titles}"
         )
@@ -116,7 +117,7 @@ class HBLeadScriptsPage:
     def assert_property_prompt(self) -> None:
         # Robot 16449: the tab does nothing until a property is picked. Seen
         # 2026-09-14 straight after login, before any dashboard property.
-        with allure.step("Property Settings asks for a property first"):
+        with allure.step("Verify Property Settings asks for a property first"):
             expect(
                 self.page.get_by_text("Please select a Property to continue.", exact=True)
             ).to_be_visible(timeout=self.timeout)
@@ -127,33 +128,125 @@ class HBLeadScriptsPage:
 
     @log_method_exceptions
     def select_property(self, settings_name: str) -> None:
-        # Confirmed live 2026-09-14: this picker only ever offers the property
-        # selected on the dashboard (cleared, it lists just that one) and
-        # comes up preset to it - so pick the dashboard property first
-        # (HBQuickLaunchPage.select_property).
-        with allure.step(f"Property Settings on {settings_name}"):
+        # Same contains-match as HBSettingsNavigation.select_property (Lease
+        # Configuration): lease_configuration_property_name "Bellflower"
+        # matches facility "Storage Outlet - Bellflower". Confirmed live
+        # 2026-09-17 (uat_storoutlet). Picker still only lists the dashboard
+        # property — select that first (HBQuickLaunchPage.select_property).
+        with allure.step(f"Open Property Settings on {settings_name}"):
             facility = self._facility()
             expect(facility).to_be_visible(timeout=self.timeout)
-            if facility.input_value() != settings_name:
-                facility.click()
-                self.page.keyboard.press("Control+A")
-                self.page.keyboard.press("Backspace")
-                option = self.page.get_by_role("option", name=settings_name, exact=True)
-                try:
-                    expect(option).to_be_visible(timeout=self.timeout)
-                except AssertionError:
-                    raise AssertionError(
-                        f"Property Settings doesn't offer {settings_name!r} - select that "
-                        "property on the dashboard first"
-                    ) from None
-                option.click()
-            # Checked before anything is saved or cleared here, so a script
-            # can never be written to some other property.
-            expect(facility).to_have_value(settings_name, timeout=self.timeout)
+            current = facility.input_value()
+            if current == settings_name or (
+                settings_name
+                and settings_name.casefold() in current.casefold()
+            ):
+                return
+            facility.click()
+            self.page.keyboard.press("Control+A")
+            self.page.keyboard.press("Backspace")
+            option = self.page.get_by_text(
+                re.compile(rf".*{re.escape(settings_name)}.*", re.IGNORECASE)
+            ).last
+            try:
+                expect(option).to_be_visible(timeout=self.timeout)
+            except AssertionError:
+                raise AssertionError(
+                    f"Property Settings doesn't offer a match for {settings_name!r} - "
+                    "select that property on the dashboard first "
+                    "(same name as lease_configuration_property_name)"
+                ) from None
+            option.click()
+            expect(facility).not_to_have_value("", timeout=self.timeout)
+            final = facility.input_value()
+            if settings_name.casefold() not in final.casefold():
+                raise AssertionError(
+                    f"Property Settings facility is {final!r}, expected it to "
+                    f"contain {settings_name!r}"
+                )
+
+    @log_method_exceptions
+    def _advanced_reservations_header(self) -> Locator:
+        # Property Settings header row (may include "Property Modified" + switch).
+        return (
+            self.page.locator(".v-expansion-panel-header")
+            .filter(visible=True)
+            .filter(
+                has_text=re.compile(r"Advanced Reservations and Rentals", re.I)
+            )
+        )
+
+    @log_method_exceptions
+    def _advanced_reservations_switch(self) -> Locator:
+        return self._advanced_reservations_header().get_by_role("switch")
+
+    @log_method_exceptions
+    def ensure_advanced_reservations_property_override(
+        self, settings_name: str, *, enabled: bool
+    ) -> bool:
+        """Set Property Settings Advanced Reservations override on or off.
+
+        Returns True when the switch is present and ends in `enabled` state,
+        False when the property does not expose that panel/toggle.
+        Dashboard property must already be selected so facility options load.
+        """
+        desired = "ON" if enabled else "OFF"
+        with allure.step(
+            f"Ensure Advanced Reservations property override {desired} ({settings_name})"
+        ):
+            self.open_lead_management()
+            self.open_tab("Property Settings")
+            self.select_property(settings_name)
+            header = self._advanced_reservations_header()
+            try:
+                expect(header).to_be_visible(timeout=min(5_000, self.timeout))
+            except AssertionError:
+                allure.attach(
+                    f"No Advanced Reservations and Rentals panel for {settings_name}",
+                    name="advanced-reservations-unavailable",
+                    attachment_type=allure.attachment_type.TEXT,
+                )
+                return False
+            switch = self._advanced_reservations_switch()
+            try:
+                expect(switch).to_be_visible(timeout=min(5_000, self.timeout))
+            except AssertionError:
+                allure.attach(
+                    f"Advanced Reservations panel has no switch for {settings_name}",
+                    name="advanced-reservations-no-switch",
+                    attachment_type=allure.attachment_type.TEXT,
+                )
+                return False
+            if switch.is_checked() == enabled:
+                with allure.step(
+                    f"Skip toggle (Advanced Reservations already {desired})"
+                ):
+                    return True
+            switch.click(force=True)
+            confirm = self.page.get_by_role("button", name="Confirm", exact=True)
+            try:
+                expect(confirm).to_be_visible(timeout=2_000)
+                confirm.click()
+            except AssertionError:
+                pass
+            if enabled:
+                expect(switch).to_be_checked(timeout=self.timeout)
+            else:
+                expect(switch).not_to_be_checked(timeout=self.timeout)
+            return True
+
+    @log_method_exceptions
+    def ensure_advanced_reservations_property_override_disabled(
+        self, settings_name: str
+    ) -> bool:
+        """Turn OFF the Property Settings Advanced Reservations override if on."""
+        return self.ensure_advanced_reservations_property_override(
+            settings_name, enabled=False
+        )
 
     @log_method_exceptions
     def expand_script_panel(self) -> None:
-        with allure.step("Expand The Script"):
+        with allure.step("Expand the script"):
             header = (
                 self.page.locator(".v-expansion-panel-header")
                 .filter(visible=True)
@@ -205,7 +298,7 @@ class HBLeadScriptsPage:
 
     @log_method_exceptions
     def assert_script_controls_enabled(self) -> None:
-        with allure.step("The Script's Save and Clear are enabled"):
+        with allure.step("Verify the script Save and Clear are enabled"):
             expect(self._button("QA-v-card-hb-primary-button-Save")).to_be_enabled(
                 timeout=self.timeout
             )
@@ -228,7 +321,7 @@ class HBLeadScriptsPage:
 
     @log_method_exceptions
     def write_script(self, lines: list[str]) -> None:
-        with allure.step("Type the script and Save"):
+        with allure.step("Type the script and save"):
             body = self._editor_body()
             # Checked after a pause and retyped if it didn't stick: the saved
             # script's late load (see open_property_script) wipes the editor.
@@ -248,7 +341,7 @@ class HBLeadScriptsPage:
 
     @log_method_exceptions
     def clear_script(self) -> None:
-        with allure.step("Clear the script and Save"):
+        with allure.step("Clear the script and save"):
             if not self.saved_script:
                 # HB saves nothing (no "Script Added Successfully") when the
                 # script hasn't changed - seen 2026-09-14 when a run failed
@@ -272,7 +365,7 @@ class HBLeadScriptsPage:
 
     @log_method_exceptions
     def assert_onboarding_script(self, lines: list[str]) -> None:
-        with allure.step("Tenant Onboarding shows the script"):
+        with allure.step("Verify Tenant Onboarding shows the script"):
             drawer = self._onboarding()
             expect(drawer.locator("p.script-description")).to_have_text(
                 SCRIPT_HEADING, timeout=self.timeout
@@ -292,7 +385,7 @@ class HBLeadScriptsPage:
 
     @log_method_exceptions
     def assert_onboarding_script_empty(self) -> None:
-        with allure.step("Tenant Onboarding shows the script heading with no script"):
+        with allure.step("Verify Tenant Onboarding shows the script heading with no script"):
             drawer = self._onboarding()
             expect(drawer.locator("p.script-description")).to_have_text(
                 SCRIPT_HEADING, timeout=self.timeout
@@ -303,7 +396,7 @@ class HBLeadScriptsPage:
 
     @log_method_exceptions
     def assert_no_onboarding_script(self) -> None:
-        with allure.step("Tenant Onboarding shows no script section"):
+        with allure.step("Verify Tenant Onboarding shows no script section"):
             drawer = self._onboarding()
             expect(drawer.locator("input#lead_initiated")).to_be_visible(timeout=self.timeout)
             # The section only renders once the property's lead-script request
@@ -326,11 +419,11 @@ class HBLeadScriptsPage:
             if drawer.count() > 0 and drawer.first.is_visible():
                 self.close_onboarding()
                 return
-            self.page.wait_for_timeout(500)
+            self.page.wait_for_timeout(waits().poll_interval)
 
     @log_method_exceptions
     def close_onboarding(self) -> None:
-        with allure.step("Close Tenant Onboarding"):
+        with allure.step("Close tenant onboarding"):
             drawer = self._onboarding()
             drawer.locator('button[name="QA-v-card-HbIcon-mdi-close"]').first.click()
             # Closing can first ask about the lead ("Not required" skips it);
@@ -343,5 +436,5 @@ class HBLeadScriptsPage:
                     return
                 if not_required.count() > 0 and not_required.first.is_visible():
                     not_required.first.click()
-                self.page.wait_for_timeout(500)
+                self.page.wait_for_timeout(waits().poll_interval)
             expect(drawer).to_be_hidden(timeout=self.timeout)

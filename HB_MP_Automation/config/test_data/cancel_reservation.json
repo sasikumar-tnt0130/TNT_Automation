@@ -1,18 +1,7 @@
 {
-  "dev": {
-    "property_name": "",
+  "defaults": {
     "notes": "QA automation test - cancel reservation"
   },
-  "uat": {
-    "property_name": "",
-    "notes": "QA automation test - cancel reservation"
-  },
-  "uat_storoutlet": {
-    "property_name": "Bellflower",
-    "notes": "QA automation test - cancel reservation"
-  },
-  "stage": {
-    "property_name": "Hamilton County",
-    "notes": "QA automation test - cancel reservation"
-  }
+  "uat_storoutlet": {},
+  "stage": {}
 }

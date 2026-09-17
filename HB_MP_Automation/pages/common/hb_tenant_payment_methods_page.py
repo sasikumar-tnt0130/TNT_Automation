@@ -5,6 +5,7 @@ from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError, ex
 
 from common_utils.wrapper_methods import log_method_exceptions
 from pages.common.hb_ach_form import fill_ach_details
+from common_utils.waits import waits
 
 
 class HBTenantPaymentMethodsPage:
@@ -47,13 +48,13 @@ class HBTenantPaymentMethodsPage:
         if live_agent_notification.count() > 0 and live_agent_notification.first.is_visible():
             if close_notification.count() > 0 and close_notification.first.is_visible():
                 try:
-                    close_notification.first.click(timeout=5000)
+                    close_notification.first.click(timeout=waits().short)
                 except PlaywrightTimeoutError:
                     pass
 
     @log_method_exceptions
     def open_tenants(self, property_name: str) -> None:
-        with allure.step(f"Open Tenants for {property_name}"):
+        with allure.step(f"Open tenants for {property_name}"):
             self._close_live_agent_notification()
             search_box = self.page.locator("#search-box")
             expect(search_box).to_be_visible(timeout=self.timeout)
@@ -63,7 +64,7 @@ class HBTenantPaymentMethodsPage:
                 "cell", name=property_name, exact=True
             )
             try:
-                expect(property_cell).to_be_visible(timeout=5000)
+                expect(property_cell).to_be_visible(timeout=waits().short)
             except AssertionError:
                 search_input.fill(property_name)
                 expect(property_cell).to_be_visible(timeout=self.timeout)
@@ -71,7 +72,7 @@ class HBTenantPaymentMethodsPage:
             # Same multi-property picker quirk as HBLeadManagementPage.
             # open_leads: only a click on the row selects it there.
             try:
-                expect(property_cell).to_be_hidden(timeout=5000)
+                expect(property_cell).to_be_hidden(timeout=waits().short)
             except AssertionError:
                 property_cell.locator("xpath=ancestor::tr[1]").dispatch_event(
                     "click"
@@ -93,7 +94,7 @@ class HBTenantPaymentMethodsPage:
     @log_method_exceptions
     def open_tenant_details(self, first_name: str, last_name: str) -> None:
         full_name = f"{first_name} {last_name}"
-        with allure.step(f"Search Given Tenant And Open Details: {full_name}"):
+        with allure.step(f"Open tenant details for {full_name}"):
             search_tenants = self.page.get_by_role(
                 "textbox", name="Search Tenants", exact=True
             )
@@ -112,7 +113,7 @@ class HBTenantPaymentMethodsPage:
 
     @log_method_exceptions
     def open_payment_methods_menu(self) -> None:
-        with allure.step("Open Side Bar On Tenant Details: Payment Methods"):
+        with allure.step("Open Payment Methods on tenant details"):
             sidebar_toggle = self.page.locator(
                 'button[name="QA-HbHeader-HbIcon-mdi-table-actions-custom-1"]'
             )
@@ -141,7 +142,7 @@ class HBTenantPaymentMethodsPage:
         routing_number: str,
         account_number: str,
     ) -> None:
-        with allure.step("Add New Payment Method: ACH"):
+        with allure.step("Add ACH payment method"):
             self.page.get_by_role(
                 "button", name="Add New Payment Method"
             ).click()
@@ -158,7 +159,7 @@ class HBTenantPaymentMethodsPage:
                     break
                 ach_option.click()
                 try:
-                    expect(ach_radio).to_be_checked(timeout=5000)
+                    expect(ach_radio).to_be_checked(timeout=waits().short)
                     break
                 except AssertionError:
                     if attempt == 2:

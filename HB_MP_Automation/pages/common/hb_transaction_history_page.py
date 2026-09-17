@@ -4,6 +4,7 @@ import allure
 from playwright.sync_api import Page, expect
 
 from common_utils.wrapper_methods import log_method_exceptions
+from common_utils.waits import waits
 
 
 class HBTransactionHistoryPage:
@@ -115,9 +116,9 @@ class HBTransactionHistoryPage:
             # Same pause as the ACH form: a Tab straight after typing lets
             # HB validate before it has taken the value (see hb_ach_form).
             reason_box.fill(reason)
-            self.page.wait_for_timeout(700)
+            self.page.wait_for_timeout(waits().poll_interval)
             self.page.keyboard.press("Tab")
-            self.page.wait_for_timeout(700)
+            self.page.wait_for_timeout(waits().poll_interval)
             self.page.locator(
                 '.v-dialog--active button[name="QA-HbBottomActionBar-hb-primary-button-Confirm"]'
             ).last.click()

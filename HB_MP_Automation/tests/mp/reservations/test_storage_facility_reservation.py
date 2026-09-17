@@ -14,6 +14,8 @@ from pages.common.hb_lead_follow_up_page import HBLeadFollowUpPage
 @allure.title("A guest reservation shows its reservation code and emails a matching confirmation")
 @allure.feature("MP Storage Facility Smoke")
 @allure.story("Show Reservation Code + Validate Tenant email for Reservation")
+@pytest.mark.smoke
+@pytest.mark.testrail("C10474")
 def test_show_reservation_code_and_email(page, environment_config, app_config, mp_guest) -> None:
     # Old Robot suite's 8884 ("Show Reservation Code") and 10603
     # ("Validate Tenant email for Reservation") - one reservation covers
@@ -26,7 +28,7 @@ def test_show_reservation_code_and_email(page, environment_config, app_config, m
     if not (environment_config.mp_city and environment_config.mp_state):
         pytest.skip(
             f"No storefront property (mp_city/mp_state) configured for "
-            f"{environment_config.name} in environments.ini"
+            f"{environment_config.name} in properties.ini"
         )
     reservation = MPLegacyReservationSetup(page, environment_config, app_config)
 
@@ -49,31 +51,33 @@ def test_show_reservation_code_and_email(page, environment_config, app_config, m
     "Show Reservation Code + Validate Tenant email for Reservation + "
     "Complete Storage Unit Reservation + Validate bill section details (Two-Step)"
 )
+@pytest.mark.smoke
+@pytest.mark.testrail("C683626")
 def test_show_reservation_code_and_email_two_step(
     page,
-    environment,
     environment_config,
     app_config,
     mp_guest,
+    two_step_property,
     property_landing_page_url,
     hb_login_page,
 ) -> None:
     # Same 8884/10603 checks against the environment's Two-Step property
-    # (environments.ini `two_step_property`, e.g. uat_storoutlet/chula_vista
+    # (properties.ini `two_step_property`, e.g. uat_storoutlet/chula_vista
     # - confirmed live 2026-09-12 serving "Reserve Now"), plus 8881 and 8900
     # in HB on the same reservation. Added after Bellflower's Legacy
     # reservations failed server-side (2026-09-13: POST /reservations ->
     # 400 UnableToReadPMSResponse).
-    property_key = app_config.get(environment, "two_step_property", fallback="").strip()
-    if not property_key:
-        pytest.skip(f"No two_step_property configured for {environment} in environments.ini")
-    two_step_property = load_property(app_config, environment, property_key)
     property_url = property_landing_page_url(
         environment_config.mp_base_url, two_step_property.mp_state, two_step_property.mp_city
     )
     timeout = app_config.getint("browser", "timeout")
     reservation = MPTwoStepReservationSetup(
-        page, environment_config, app_config, property_url=property_url
+        page,
+        environment_config,
+        app_config,
+        property_url=property_url,
+        property_config=two_step_property,
     )
 
     with allure.step("8884: reservation code is shown on confirmation"):

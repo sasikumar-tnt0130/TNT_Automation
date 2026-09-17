@@ -5,6 +5,7 @@ import allure
 from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError, expect
 
 from common_utils.wrapper_methods import log_method_exceptions
+from common_utils.waits import waits
 
 
 class HBTenantSpacesPage:
@@ -41,13 +42,13 @@ class HBTenantSpacesPage:
         if live_agent_notification.count() > 0 and live_agent_notification.first.is_visible():
             if close_notification.count() > 0 and close_notification.first.is_visible():
                 try:
-                    close_notification.first.click(timeout=5000)
+                    close_notification.first.click(timeout=waits().short)
                 except PlaywrightTimeoutError:
                     pass
 
     @log_method_exceptions
     def open_tenants(self, property_name: str) -> None:
-        with allure.step(f"Open Tenants for {property_name}"):
+        with allure.step(f"Open tenants for {property_name}"):
             self._close_live_agent_notification()
             search_box = self.page.locator("#search-box")
             expect(search_box).to_be_visible(timeout=self.timeout)
@@ -57,7 +58,7 @@ class HBTenantSpacesPage:
                 "cell", name=property_name, exact=True
             )
             try:
-                expect(property_cell).to_be_visible(timeout=5000)
+                expect(property_cell).to_be_visible(timeout=waits().short)
             except AssertionError:
                 search_input.fill(property_name)
                 expect(property_cell).to_be_visible(timeout=self.timeout)
@@ -65,7 +66,7 @@ class HBTenantSpacesPage:
             # Same multi-property picker quirk as HBLeadManagementPage.
             # open_leads: only a click on the row selects it there.
             try:
-                expect(property_cell).to_be_hidden(timeout=5000)
+                expect(property_cell).to_be_hidden(timeout=waits().short)
             except AssertionError:
                 property_cell.locator("xpath=ancestor::tr[1]").dispatch_event(
                     "click"
@@ -91,7 +92,7 @@ class HBTenantSpacesPage:
     @log_method_exceptions
     def open_tenant_details(self, first_name: str, last_name: str) -> None:
         full_name = f"{first_name} {last_name}"
-        with allure.step(f"Search Given Tenant And Open Details: {full_name}"):
+        with allure.step(f"Open tenant details for {full_name}"):
             search_tenants = self.page.get_by_role(
                 "textbox", name="Search Tenants", exact=True
             )
@@ -131,15 +132,24 @@ class HBTenantSpacesPage:
         storefront guest shares one name, so the row is matched on the
         space number too."""
         date_pattern = rf"{move_in_date:%b} 0?{move_in_date.day}, {move_in_date.year}"
-        with allure.step(f"Tenant row: {guest_name}, space {space_number}"):
+        with allure.step(f"Verify tenant row: {guest_name}, space {space_number}"):
             self._close_live_agent_notification()
             row = self._tenant_row_by_space(space_number, guest_name)
             expect(row).to_contain_text("Current")
             expect(row).to_contain_text(re.compile(date_pattern))
-            expect(row).to_contain_text("Website Application")
+            # Stage's Tenants grid has no "Moved In By" column (2026-09-15:
+            # "#BGed51 Auto Tester ... Current $0.00 ... 213 Barre Paxton Rd")
+            # - the origin is checked only where the grid shows it.
+            if self.page.get_by_role("columnheader", name=re.compile(r"Moved In By", re.I)).count() > 0:
+                expect(row).to_contain_text("Website Application")
+            else:
+                allure.attach(
+                    "This Tenants grid has no 'Moved In By' column - 'Website Application' not checked",
+                    name="moved in by", attachment_type=allure.attachment_type.TEXT,
+                )
             expect(row).to_contain_text("$0.00")
 
-        with allure.step("Tenant page: prepaid rental and autopay"):
+        with allure.step("Verify tenant page: prepaid rental and autopay"):
             self._open_tenant_from_row(row, space_number, guest_name)
             self._assert_payment_landed(amount_paid, min_paid_through=move_in_date)
             body = self.page.locator("body")
@@ -182,7 +192,7 @@ class HBTenantSpacesPage:
             search_tenants.fill(space_number)
             self.page.keyboard.press("Enter")
             try:
-                expect(row).to_be_visible(timeout=15000)
+                expect(row).to_be_visible(timeout=waits().long)
                 break
             except AssertionError:
                 if attempt == 2:
@@ -199,8 +209,8 @@ class HBTenantSpacesPage:
             try:
                 row.get_by_role("gridcell").filter(
                     has=self.page.get_by_text(f"#{space_number}", exact=True)
-                ).first.click(timeout=15000)
-                expect(self.page).to_have_url(re.compile(r"/contacts/[^/?#]+"), timeout=15000)
+                ).first.click(timeout=waits().long)
+                expect(self.page).to_have_url(re.compile(r"/contacts/[^/?#]+"), timeout=waits().long)
                 return
             except Exception:
                 if attempt == 1:
@@ -214,7 +224,7 @@ class HBTenantSpacesPage:
         now sits in the tenant page's bottom action bar (Robot's
         expansion-panel button is gone) and opens the same Take a Payment
         drawer as Quick Launch - drive the drawer with HBQuickLaunchPage."""
-        with allure.step("Take A Payment From Tenants Page"):
+        with allure.step("Take a payment from the tenants page"):
             self._close_live_agent_notification()
             take_payment = self.page.locator(
                 'button[name="QA-HbBottomActionBar-hb-primary-button-Take-a-Payment"]'
@@ -264,7 +274,7 @@ class HBTenantSpacesPage:
                         repr(current), name="tenant balance", attachment_type=allure.attachment_type.TEXT
                     )
                     return current
-                self.page.wait_for_timeout(500)
+                self.page.wait_for_timeout(waits().poll_interval)
             raise AssertionError(
                 f"Tenant page balance never settled"
                 f"{' on new figures' if changed_from else ''}: {readings[-1] if readings else None}"
@@ -280,7 +290,7 @@ class HBTenantSpacesPage:
         on or after min_paid_through). The tenant page first shows
         "Loading..." and interim figures, so it's re-read until a state holds
         and nothing has changed for 3 s. Attaches which state it was."""
-        with allure.step(f"HB shows the ${amount:,.2f} payment"):
+        with allure.step(f"Verify HB shows the ${amount:,.2f} payment"):
             readings: list[dict] = []
             for _ in range(int(self.timeout / 500)):
                 current = self._parse_lease_balance()
@@ -301,7 +311,7 @@ class HBTenantSpacesPage:
                         attachment_type=allure.attachment_type.TEXT,
                     )
                     return
-                self.page.wait_for_timeout(500)
+                self.page.wait_for_timeout(waits().poll_interval)
             raise AssertionError(
                 f"HB shows neither Prepaid Balance ${amount:,.2f} nor a $0.00 balance paid "
                 f"through {min_paid_through:%b %d, %Y} or later: {readings[-1] if readings else None}"
@@ -324,7 +334,7 @@ class HBTenantSpacesPage:
                 self._tenant_row_by_space(space_number, guest_name), space_number, guest_name
             )
 
-        with allure.step("Prepaid balance and autopay cancel/re-enrol notes"):
+        with allure.step("Verify prepaid balance and autopay cancel/re-enrol notes"):
             # With a month paid ahead, rent that HB has already applied runs
             # past this month's end - so at least into next month.
             next_month = (date.today().replace(day=1) + timedelta(days=32)).replace(day=1)
@@ -409,6 +419,37 @@ class HBTenantSpacesPage:
             ).to_be_visible(timeout=self.timeout)
 
     @log_method_exceptions
+    def assert_business_holds_spaces(
+        self, business_name: str, space_numbers: list[str]
+    ) -> None:
+        """C64723 / C66593. Confirmed live (2026-09-16, stage/Hamilton County):
+        a second storefront RAB rental with the same business email adds another
+        Current Tenants row under the business name (email search finds nothing;
+        business-name search lists one row per space). Opening either contact
+        shows every `Space <n>` heading on the same tenant page - one contact,
+        one lease per space, same business profile."""
+        if len(space_numbers) < 2:
+            raise AssertionError("assert_business_holds_spaces needs at least two spaces")
+        with allure.step(f"Verify tenants grid: {business_name} has rows for {', '.join(space_numbers)}"):
+            self._close_live_agent_notification()
+            for space_number in space_numbers:
+                row = self._tenant_row_by_space(space_number, business_name)
+                expect(row).to_contain_text("Current")
+                expect(row).to_contain_text(business_name)
+
+        anchor = space_numbers[0]
+        with allure.step(
+            f"Verify tenant contact opened from {anchor} lists every rented space"
+        ):
+            self.open_storefront_tenant(business_name, anchor)
+            body = self.page.locator("body")
+            expect(body).to_contain_text(business_name)
+            for space_number in space_numbers:
+                expect(
+                    self.page.get_by_text(f"Space {space_number}", exact=True).first
+                ).to_be_visible(timeout=self.timeout)
+
+    @log_method_exceptions
     def remove_autopay(self, space_number: str) -> None:
         """Old Robot Mariposa ReservationAndRentals suite's "Remove Card
         Details". Confirmed live (2026-09-13, uat_storoutlet/Chula Vista,
@@ -461,7 +502,7 @@ class HBTenantSpacesPage:
 
     @log_method_exceptions
     def start_add_space(self) -> None:
-        with allure.step("Add Space"):
+        with allure.step("Add space"):
             add_space = self.page.get_by_role("button", name="Add Space", exact=True)
             expect(add_space).to_be_visible(timeout=self.timeout)
             add_space.click()
@@ -481,7 +522,7 @@ class HBTenantSpacesPage:
         # menu, the space's menu and the grid's Download/Filter one - and only
         # the space's offers "Transfer". Each is opened in turn until that
         # item shows; the others are toggled closed again.
-        with allure.step("Select Transfer Menu On Space"):
+        with allure.step("Select transfer menu on space"):
             transfer_item = self.page.get_by_role(
                 "menuitem", name="Transfer", exact=True
             )
@@ -495,10 +536,10 @@ class HBTenantSpacesPage:
                     continue
                 menu.click()
                 try:
-                    expect(transfer_item).to_be_visible(timeout=3000)
+                    expect(transfer_item).to_be_visible(timeout=waits().tiny)
                 except AssertionError:
                     menu.click()
-                    self.page.wait_for_timeout(500)
+                    self.page.wait_for_timeout(waits().poll_interval)
                     continue
                 transfer_item.click()
                 expect(self.page.locator("input#reason")).to_be_attached(
@@ -511,7 +552,7 @@ class HBTenantSpacesPage:
     def setup_transfer(self, reason: str = "Space is too far away") -> str:
         # Old Robot suite's "Setup Transfer": a reason, then the space to
         # transfer into. Returns that space's number (e.g. "#0020").
-        with allure.step(f"Setup Transfer: {reason}"):
+        with allure.step(f"Set up transfer: {reason}"):
             # Same Vuetify select as HBQuickLaunchPage.
             # select_all_spaces_for_payment's Add Additional Time: clicking
             # the enclosing .v-select__slot is what opens it.
@@ -567,7 +608,7 @@ class HBTenantSpacesPage:
         # tests on uat_storoutlet (its card form is missing its payment
         # gateway API key); that branch follows pay_by_cash's radio
         # handling and hasn't been seen live on this screen yet.
-        with allure.step("Payment For Transfer"):
+        with allure.step("Make payment for transfer"):
             self.page.get_by_role("button", name="Take Payment", exact=True).click()
             expect(
                 self.page.get_by_role("button", name="Confirm Transfer", exact=True)
@@ -592,7 +633,7 @@ class HBTenantSpacesPage:
 
     @log_method_exceptions
     def confirm_transfer(self) -> None:
-        with allure.step("Confirm Transfer"):
+        with allure.step("Confirm transfer"):
             self.page.get_by_role("button", name="Confirm Transfer", exact=True).click()
             # Confirmed live: an "Execute Transfer" dialog ("...you will be
             # executing the transfer and the space your tenant is going to
@@ -625,7 +666,7 @@ class HBTenantSpacesPage:
         # panel, so callers sign with HBQuickLaunchPage.
         # sign_documents_on_this_device first; Finalize Transfer stays
         # disabled until that's done.
-        with allure.step("Finalize Transfer"):
+        with allure.step("Finalize transfer"):
             finalize = self.page.get_by_role(
                 "button", name="Finalize Transfer", exact=True
             )
@@ -639,7 +680,7 @@ class HBTenantSpacesPage:
         assertions were already commented out there): the Transfer
         Receipt's amounts, plus its full text for the caller's checks.
         expected_space (e.g. "#0020"), when given, is also waited for."""
-        with allure.step("Verify Transfer Invoice"):
+        with allure.step("Verify transfer invoice"):
             expect(self.page.get_by_text("Transfer Receipt").first).to_be_visible(
                 timeout=self.timeout
             )
@@ -674,6 +715,6 @@ class HBTenantSpacesPage:
     @log_method_exceptions
     def finish_transfer(self) -> None:
         # Old Robot suite's "Finalize Transfer" keyword.
-        with allure.step("Finalize Transfer screen: Finish and Close"):
+        with allure.step("Finalize transfer screen: finish and close"):
             self._receipt_finish_button().click()
             expect(self._receipt_finish_button()).to_be_hidden(timeout=self.timeout)

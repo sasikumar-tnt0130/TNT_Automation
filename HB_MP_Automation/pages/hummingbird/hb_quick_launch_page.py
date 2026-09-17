@@ -10,6 +10,7 @@ from playwright.sync_api import (
 
 from common_utils.wrapper_methods import log_method_exceptions
 from pages.common.hb_ach_form import fill_ach_details
+from common_utils.waits import waits
 
 
 class HBQuickLaunchPage:
@@ -45,7 +46,7 @@ class HBQuickLaunchPage:
         if live_agent_notification.count() > 0 and live_agent_notification.first.is_visible():
             if close_notification.count() > 0 and close_notification.first.is_visible():
                 try:
-                    close_notification.first.click(timeout=5000)
+                    close_notification.first.click(timeout=waits().short)
                 except PlaywrightTimeoutError:
                     pass
 
@@ -86,7 +87,7 @@ class HBQuickLaunchPage:
             "cell", name=property_name, exact=True
         )
         try:
-            expect(property_cell).to_be_visible(timeout=5000)
+            expect(property_cell).to_be_visible(timeout=waits().short)
         except AssertionError:
             search_input.fill(property_name)
             expect(property_cell).to_be_visible(timeout=self.timeout)
@@ -94,7 +95,7 @@ class HBQuickLaunchPage:
         # Same multi-property picker quirk as HBLeadManagementPage.
         # open_leads: only a click on the row selects it there.
         try:
-            expect(property_cell).to_be_hidden(timeout=5000)
+            expect(property_cell).to_be_hidden(timeout=waits().short)
         except AssertionError:
             property_cell.locator("xpath=ancestor::tr[1]").dispatch_event("click")
         # Confirms the single-property dashboard actually switched
@@ -155,7 +156,7 @@ class HBQuickLaunchPage:
         # actually works, mirroring the old Robot suite's own "Search
         # And Select A Tenant To Take Payment" keyword, which likewise
         # searched on ${lead_firstname} alone rather than the full name.
-        with allure.step(f"Search And Select A Tenant To Take Payment: {search_term}"):
+        with allure.step(f"Search and select a tenant to take payment: {search_term}"):
             search_for_tenant = self.page.get_by_role(
                 "textbox", name="Search for Tenant", exact=True
             )
@@ -189,7 +190,7 @@ class HBQuickLaunchPage:
         # old Robot suite's "Check For Due Amount or Future Payments"
         # keyword handled by adding time to the lease to generate a
         # payable invoice when the balance was already zero.
-        with allure.step("Check For Due Amount or Future Payments"):
+        with allure.step("Check for due amount or future payments"):
             # Read from "Total Payment:" rather than the first "Total Due:" -
             # confirmed live (2026-09-11, Bellflower, one-space tenant): that
             # label's own text didn't carry its amount, so a $0.00 balance
@@ -213,7 +214,7 @@ class HBQuickLaunchPage:
         # months regardless of the current Total Due, since the "Make
         # payment for several months" scenario specifically wants a
         # multi-month invoice to pay off in one go.
-        with allure.step(f"Select Number of Months: {months}"):
+        with allure.step(f"Select number of months: {months}"):
             self._add_additional_time(months)
             # Same as ensure_payable_balance: let the new invoice reach Total
             # Payment before a payment method is picked - with nothing to pay
@@ -231,7 +232,7 @@ class HBQuickLaunchPage:
         # checkbox in the header, and a space with nothing due only becomes
         # payable after Add Additional Time on its own panel. Returns the
         # combined Total Due across every space, for checking the receipt.
-        with allure.step("Select Multiple Spaces For Payment"):
+        with allure.step("Select multiple spaces for payment"):
             space_panels = self.page.locator(".v-expansion-panel").filter(
                 has=self.page.get_by_role("checkbox"),
                 has_text="Total Due:",
@@ -260,7 +261,7 @@ class HBQuickLaunchPage:
                         break
                     ripple.click()
                     try:
-                        expect(checkbox).to_be_checked(timeout=5000)
+                        expect(checkbox).to_be_checked(timeout=waits().short)
                         break
                     except AssertionError:
                         if attempt == 2:
@@ -308,7 +309,7 @@ class HBQuickLaunchPage:
         # Tendered and Reference Name both come pre-filled (from the
         # invoice total and tenant name respectively) - nothing else to
         # enter before processing.
-        with allure.step("Make Cash Payment"):
+        with allure.step("Make cash payment"):
             # Confirmed live: matching "Cash" by button role/name alone
             # is ambiguous - this page can have an unrelated element
             # (e.g. a charges/history expansion panel) that also reduces
@@ -338,7 +339,7 @@ class HBQuickLaunchPage:
                 else:
                     cash_option.click()
                 try:
-                    expect(cash_radio).to_be_checked(timeout=5000)
+                    expect(cash_radio).to_be_checked(timeout=waits().short)
                     break
                 except AssertionError:
                     if attempt == 2:
@@ -357,7 +358,7 @@ class HBQuickLaunchPage:
         # starts disabled on the Finalize & Take Payment step and enables a
         # moment later; once processed, the payment buttons give way to the
         # bottom-bar "Finalize" (see complete_move_in_checklist_and_finalize).
-        with allure.step("Skip Payments"):
+        with allure.step("Skip payments"):
             skip_button = self.page.get_by_role(
                 "button", name="Skip Payment", exact=True
             )
@@ -372,7 +373,7 @@ class HBQuickLaunchPage:
         # "Amount Paid", the payment date, then the amount (e.g. $475.00
         # for two spaces paid together).
         formatted = f"${amount:,.2f}"
-        with allure.step(f"Verify The Amount Paid in Invoice: {formatted}"):
+        with allure.step(f"Verify the amount paid in the invoice: {formatted}"):
             expect(
                 self.page.get_by_text("Amount Paid", exact=True).first
             ).to_be_visible(timeout=self.timeout)
@@ -382,7 +383,7 @@ class HBQuickLaunchPage:
 
     @log_method_exceptions
     def assert_payment_receipt(self, payment_method: str) -> None:
-        with allure.step(f"Verify The Amount Paid in Invoice: {payment_method}"):
+        with allure.step(f"Verify the payment method in the invoice: {payment_method}"):
             expect(
                 self.page.get_by_text("Customer Receipt", exact=True)
             ).to_be_visible(timeout=self.timeout)
@@ -392,7 +393,7 @@ class HBQuickLaunchPage:
 
     @log_method_exceptions
     def start_new_contact(self, email: str) -> None:
-        with allure.step(f"Create New Contact: {email}"):
+        with allure.step(f"Create new contact: {email}"):
             search_for_tenant = self.page.get_by_role(
                 "textbox", name="Search for Tenant", exact=True
             )
@@ -413,7 +414,7 @@ class HBQuickLaunchPage:
         lead_initiated: str,
         lead_source: str,
     ) -> None:
-        with allure.step(f"Fill Lead details for {first_name} {last_name}"):
+        with allure.step(f"Fill lead details for {first_name} {last_name}"):
             self.page.get_by_role("textbox", name="First", exact=True).fill(
                 first_name
             )
@@ -441,7 +442,7 @@ class HBQuickLaunchPage:
         # Bellflower): name/email/phone/address come pre-filled there, but
         # these two start blank and "Move In" is silently rejected until
         # they're set.
-        with allure.step(f"Lead source: {lead_initiated} / {lead_source}"):
+        with allure.step(f"Set lead source: {lead_initiated} / {lead_source}"):
             self._select_dropdown_option(
                 "How was the lead initiated?", lead_initiated
             )
@@ -505,7 +506,7 @@ class HBQuickLaunchPage:
                 stable_polls += 1
                 if stable_polls >= 3:
                     break
-            self.page.wait_for_timeout(500)
+            self.page.wait_for_timeout(waits().poll_interval)
         expect(rows.first).to_be_visible(timeout=self.timeout)
         # Confirmed live (2026-09-11, stage): filtering the Space List's
         # own "Type" picker down to just Storage is fragile in practice -
@@ -558,7 +559,7 @@ class HBQuickLaunchPage:
         # reservation that's later moved in (e.g. "From Leads create a
         # Rental") needs the same Parking exclusion, since the Lease step
         # it reaches is filled by the same storage-only form methods.
-        with allure.step("Select Space And Reserve"):
+        with allure.step("Select space and reserve"):
             space_number = self._select_first_available_space(
                 exclude_number_prefixes
             )
@@ -582,7 +583,7 @@ class HBQuickLaunchPage:
         # lead source filled, "Save Lead" needs no space - it creates a plain
         # active lead, shows "Lead created successfully." after a few
         # seconds and closes the onboarding drawer by itself.
-        with allure.step("Save Lead"):
+        with allure.step("Save lead"):
             save_button = self.page.get_by_role("button", name="Save Lead", exact=True)
             expect(save_button).to_be_enabled(timeout=self.timeout)
             save_button.click()
@@ -595,7 +596,7 @@ class HBQuickLaunchPage:
 
     @log_method_exceptions
     def assert_reservation_active(self, first_name: str, last_name: str) -> None:
-        with allure.step(f"Validate reservation for {first_name} {last_name}"):
+        with allure.step(f"Verify reservation for {first_name} {last_name}"):
             expect(self.page).to_have_url(re.compile(r"/leads"), timeout=self.timeout)
             search_leads = self.page.get_by_role(
                 "textbox", name="Search Leads", exact=True
@@ -626,7 +627,7 @@ class HBQuickLaunchPage:
 
     @log_method_exceptions
     def move_in_first_available_space(self) -> str:
-        with allure.step("Select Space And Move In"):
+        with allure.step("Select space and move in"):
             # Excludes space numbers prefixed "Pa" (Parking, confirmed
             # live) - this flow's fill_lease_address_and_identity/
             # decline_coverage_with_expiration only know how to complete
@@ -648,7 +649,7 @@ class HBQuickLaunchPage:
             # a flow reaching this (e.g. Add Space) doesn't show the cost.
             try:
                 expect(self.page.locator("body")).to_contain_text(
-                    re.compile(r"Move-In Cost:\s*\$[\d,]+\.\d{2}"), timeout=15000
+                    re.compile(r"Move-In Cost:\s*\$[\d,]+\.\d{2}"), timeout=waits().long
                 )
             except AssertionError:
                 pass
@@ -669,7 +670,7 @@ class HBQuickLaunchPage:
                 )
             )
             try:
-                expect(date_of_birth).to_be_visible(timeout=30000)
+                expect(date_of_birth).to_be_visible(timeout=waits().extra_long)
             except AssertionError:
                 # One guarded retry, only when the first click visibly never
                 # registered: Move In still showing and the Lead step not yet
@@ -699,7 +700,7 @@ class HBQuickLaunchPage:
         # page) resets every field here back to blank, so callers must
         # fill this in the same uninterrupted pass as the rest of the
         # lease before advancing to Payments.
-        with allure.step("Fill In Mandatory Lease Details"):
+        with allure.step("Fill in mandatory lease details"):
             self.page.get_by_role("textbox", name="Street", exact=True).fill(street)
             self.page.get_by_role("textbox", name="Zip", exact=True).fill(zip_code)
             self._select_dropdown_option_first_match("State", state)
@@ -758,7 +759,7 @@ class HBQuickLaunchPage:
         # the furthest-out option in each is the only choice that stays
         # valid regardless of which day this runs, since any fixed
         # month/year eventually ages out of that window.
-        with allure.step("Select Services Applicable: decline coverage"):
+        with allure.step("Select applicable services: decline coverage"):
             decline_label = self.page.locator("label").filter(
                 has_text="Tenant has their own coverage"
             )
@@ -774,7 +775,7 @@ class HBQuickLaunchPage:
             for attempt in range(3):
                 decline_label.click()
                 try:
-                    expect(month_field).to_be_visible(timeout=5000)
+                    expect(month_field).to_be_visible(timeout=waits().short)
                     break
                 except AssertionError:
                     if attempt == 2:
@@ -802,7 +803,7 @@ class HBQuickLaunchPage:
         # with "The Notice Delivery Method field is required" if it's
         # left collapsed, even though a default appears pre-selected
         # once opened.
-        with allure.step("Confirm Notice Delivery Method"):
+        with allure.step("Confirm notice delivery method"):
             header = self.page.get_by_role(
                 "button", name="Notice Delivery Method", exact=True
             )
@@ -815,7 +816,7 @@ class HBQuickLaunchPage:
             # and Payments accepts the lease without it. Only enforced
             # where the section actually exists.
             try:
-                expect(header).to_be_visible(timeout=10000)
+                expect(header).to_be_visible(timeout=waits().medium)
             except AssertionError:
                 return
             # Confirmed live: the header's first click can register as
@@ -831,10 +832,10 @@ class HBQuickLaunchPage:
             for attempt in range(3):
                 header.click()
                 try:
-                    expect(notice_radio).to_be_visible(timeout=5000)
+                    expect(notice_radio).to_be_visible(timeout=waits().short)
                     if not notice_radio.is_checked():
                         self._mouse_click(notice_radio)
-                        expect(notice_radio).to_be_checked(timeout=5000)
+                        expect(notice_radio).to_be_checked(timeout=waits().short)
                     break
                 except (AssertionError, PlaywrightTimeoutError):
                     if attempt == 2:
@@ -864,7 +865,7 @@ class HBQuickLaunchPage:
         # that failed run (unlike Notice Delivery Method, which starts
         # collapsed), so the header is only clicked if the question isn't
         # already visible, to avoid accidentally collapsing it instead.
-        with allure.step("Confirm Vehicle Information"):
+        with allure.step("Confirm vehicle information"):
             header = self.page.get_by_role(
                 "button", name="Vehicle Information", exact=True
             )
@@ -876,17 +877,17 @@ class HBQuickLaunchPage:
                 if question.count() == 0 or not question.first.is_visible():
                     header.click()
                 try:
-                    expect(question).to_be_visible(timeout=5000)
+                    expect(question).to_be_visible(timeout=waits().short)
                     radiogroup = question.locator(
                         "xpath=following::*[@role='radiogroup'][1]"
                     )
                     target_radio = radiogroup.get_by_role(
                         "radio", name=target_label, exact=True
                     )
-                    expect(target_radio).to_be_visible(timeout=5000)
+                    expect(target_radio).to_be_visible(timeout=waits().short)
                     if not target_radio.is_checked():
                         self._mouse_click(target_radio)
-                        expect(target_radio).to_be_checked(timeout=5000)
+                        expect(target_radio).to_be_checked(timeout=waits().short)
                     break
                 except (AssertionError, PlaywrightTimeoutError):
                     if attempt == 2:
@@ -903,7 +904,7 @@ class HBQuickLaunchPage:
 
     @log_method_exceptions
     def proceed_to_payments(self) -> None:
-        with allure.step("Proceed to Payments"):
+        with allure.step("Proceed to payments"):
             payments_button = self.page.get_by_role(
                 "button", name="Payments", exact=True
             )
@@ -949,7 +950,7 @@ class HBQuickLaunchPage:
         # blank MM/YY dropdowns. expiry_month/expiry_year/billing_zip
         # are only actually used as a fallback when the corresponding
         # field is still blank after the shortcuts are tried.
-        with allure.step("Make Card Payment"):
+        with allure.step("Make card payment"):
             self.page.get_by_role(
                 "button", name="Credit/Debit", exact=True
             ).click()
@@ -1006,7 +1007,7 @@ class HBQuickLaunchPage:
                     f"${total:,.2f}", name="Total Payment", attachment_type=allure.attachment_type.TEXT
                 )
                 return total
-            self.page.wait_for_timeout(500)
+            self.page.wait_for_timeout(waits().poll_interval)
         raise AssertionError(f"Take a Payment's Total Payment never settled: {readings[-6:]}")
 
     @log_method_exceptions
@@ -1041,7 +1042,7 @@ class HBQuickLaunchPage:
         # Payment Method also shows (see fill_ach_details). A $574.50
         # payment went through with routing 011401533 (POST .../payments/
         # bulk 200, receipt "Checking**** 6667").
-        with allure.step("Make ACH Payment"):
+        with allure.step("Make ACH payment"):
             ach_option = self.page.get_by_role("radiogroup").get_by_role(
                 "button", name="ACH/E-Check", exact=True
             )
@@ -1058,7 +1059,7 @@ class HBQuickLaunchPage:
                 else:
                     ach_option.click()
                 try:
-                    expect(ach_radio).to_be_checked(timeout=5000)
+                    expect(ach_radio).to_be_checked(timeout=waits().short)
                     break
                 except AssertionError:
                     if attempt == 2:
@@ -1109,7 +1110,7 @@ class HBQuickLaunchPage:
         # specific lease pulled in, so this checks for "I Agree" first
         # and only falls through to the multi-field flow if that never
         # appears.
-        with allure.step("Sign The Documents"):
+        with allure.step("Sign the documents"):
             sign_button = self.page.get_by_role(
                 "button", name="Sign on This Device", exact=True
             )
@@ -1131,7 +1132,7 @@ class HBQuickLaunchPage:
                 # Neither ever showed up - re-check each individually so
                 # the resulting error names whichever locator's wait this
                 # actually was, instead of the ambiguous combined one.
-                expect(start_button).to_be_visible(timeout=5000)
+                expect(start_button).to_be_visible(timeout=waits().short)
 
             if i_agree_button.count() > 0 and i_agree_button.is_visible():
                 i_agree_button.click()
@@ -1191,7 +1192,7 @@ class HBQuickLaunchPage:
         if unsigned_field.count() == 0:
             return False
         try:
-            unsigned_field.first.click(trial=True, timeout=2000)
+            unsigned_field.first.click(trial=True, timeout=waits().tiny)
         except PlaywrightTimeoutError:
             return False
         field_id = unsigned_field.first.get_attribute("data-id")
@@ -1220,14 +1221,14 @@ class HBQuickLaunchPage:
                 for attempt in range(5):
                     self._click_within(accept_button)
                     try:
-                        expect(signature_input).to_be_hidden(timeout=4000)
+                        expect(signature_input).to_be_hidden(timeout=waits().tiny)
                         break
                     except AssertionError:
                         if attempt == 4:
                             raise
                 expect(signed_field).to_have_count(1, timeout=self.timeout)
                 return True
-            self.page.wait_for_timeout(250)
+            self.page.wait_for_timeout(waits().poll_interval)
         return False
 
     @log_method_exceptions
@@ -1287,7 +1288,7 @@ class HBQuickLaunchPage:
         # item is checked - no completion message until then. Stage's
         # properties complete right after signing instead, so this only
         # acts when a Finalize button shows up before the completion text.
-        with allure.step("Complete Move-In Checklist and Finalize"):
+        with allure.step("Complete move-in checklist and finalize"):
             finalize_button = self.page.get_by_role(
                 "button", name="Finalize", exact=True
             )
@@ -1333,7 +1334,7 @@ class HBQuickLaunchPage:
                         break
                     ripple.click()
                     try:
-                        expect(item).to_be_checked(timeout=5000)
+                        expect(item).to_be_checked(timeout=waits().short)
                         break
                     except AssertionError:
                         if attempt == 2:
@@ -1348,7 +1349,7 @@ class HBQuickLaunchPage:
             # assert_lease_completed, which callers run next, is the check
             # that actually matters.
             try:
-                finalize_button.click(timeout=10000)
+                finalize_button.click(timeout=waits().medium)
             except PlaywrightTimeoutError:
                 pass
 
@@ -1361,7 +1362,7 @@ class HBQuickLaunchPage:
             )
             try:
                 expect(threshold_warning.or_(lease_completed).first).to_be_visible(
-                    timeout=10000
+                    timeout=waits().medium
                 )
             except AssertionError:
                 return
@@ -1372,7 +1373,7 @@ class HBQuickLaunchPage:
 
     @log_method_exceptions
     def finish_and_close(self) -> None:
-        with allure.step("Finish and Close"):
+        with allure.step("Finish and close"):
             finish_button = self.page.get_by_role(
                 "button", name="Finish and Close", exact=True
             )
@@ -1387,7 +1388,7 @@ class HBQuickLaunchPage:
         # "Success! The lease has been completed.", the single "I Agree"
         # path (e.g. Rutland's "Superlease") instead shows "Your lease
         # has been finalized!".
-        with allure.step("Validate the lease was finalized"):
+        with allure.step("Verify the lease was finalized"):
             expect(
                 self.page.get_by_text(
                     re.compile(

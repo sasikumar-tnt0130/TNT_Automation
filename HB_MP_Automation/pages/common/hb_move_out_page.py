@@ -12,6 +12,7 @@ from playwright.sync_api import (
     expect,
 )
 from common_utils.wrapper_methods import log_method_exceptions
+from common_utils.waits import waits
 
 
 class HBMoveOutPage:
@@ -22,7 +23,7 @@ class HBMoveOutPage:
 
     @log_method_exceptions
     def open_tenants(self, property_name: str) -> None:
-        with allure.step(f"Open Tenants for {property_name}"):
+        with allure.step(f"Open tenants for {property_name}"):
             self._close_live_agent_notification()
             search_box = self.page.locator("#search-box")
             expect(search_box).to_be_visible(timeout=self.timeout)
@@ -38,7 +39,7 @@ class HBMoveOutPage:
             # without narrowing it down first - type the name to filter
             # down to it explicitly instead of hoping it's already visible.
             try:
-                expect(property_cell).to_be_visible(timeout=5000)
+                expect(property_cell).to_be_visible(timeout=waits().short)
             except AssertionError:
                 search_input.fill(property_name)
                 expect(property_cell).to_be_visible(timeout=self.timeout)
@@ -46,7 +47,7 @@ class HBMoveOutPage:
             # Same multi-property picker quirk as HBLeadManagementPage.
             # open_leads: only a click on the row selects it there.
             try:
-                expect(property_cell).to_be_hidden(timeout=5000)
+                expect(property_cell).to_be_hidden(timeout=waits().short)
             except AssertionError:
                 property_cell.locator("xpath=ancestor::tr[1]").dispatch_event(
                     "click"
@@ -73,7 +74,7 @@ class HBMoveOutPage:
         loading_row = self.page.get_by_text("Loading", exact=True)
         deadline = time.monotonic() + self.timeout / 1000
         while time.monotonic() < deadline and loading_row.count() > 0:
-            self.page.wait_for_timeout(200)
+            self.page.wait_for_timeout(waits().poll_interval)
 
     @log_method_exceptions
     def _close_live_agent_notification(self) -> None:
@@ -100,7 +101,7 @@ class HBMoveOutPage:
                         # own scroll-into-view never resolves it - not
                         # worth burning the full default timeout on a
                         # non-essential notification dismissal.
-                        close_notification.first.click(timeout=5000)
+                        close_notification.first.click(timeout=waits().short)
                     except PlaywrightTimeoutError:
                         pass
 
@@ -208,7 +209,7 @@ class HBMoveOutPage:
             # other, unrelated background requests that never go idle.
             self._wait_for_grid_loading_to_finish()
             try:
-                self.page.wait_for_load_state("networkidle", timeout=3000)
+                self.page.wait_for_load_state("networkidle", timeout=waits().tiny)
             except PlaywrightTimeoutError:
                 pass
             filter_icon = self.page.locator(
@@ -658,7 +659,7 @@ class HBMoveOutPage:
                 "Intent to Move-Out", exact=True
             ).first
             try:
-                expect(intent_to_move_out).to_be_visible(timeout=5000)
+                expect(intent_to_move_out).to_be_visible(timeout=waits().short)
             except AssertionError:
                 logging.warning(
                     "Skipping Space %s: no working Move Out flow opened for "
@@ -677,9 +678,9 @@ class HBMoveOutPage:
                 'button[name="QA-IntentMoveOut-hb-primary-button-Next"]'
             )
             try:
-                expect(intent_next).to_be_visible(timeout=20000)
+                expect(intent_next).to_be_visible(timeout=waits().extra_long)
             except AssertionError:
-                with allure.step("Move-out drawer opened blank - reopening it once"):
+                with allure.step("Verify move-out drawer opened blank - reopening it once"):
                     blank_drawer = self.page.locator(".v-navigation-drawer.move_out")
                     blank_drawer.locator(
                         'button[name="QA-v-card-HbIcon-mdi-close"]'
@@ -704,7 +705,7 @@ class HBMoveOutPage:
                 "button", name="Review Move-Out Statement", exact=True
             ).click()
 
-        with allure.step(f"Confirm move out reason: {reason}"):
+        with allure.step(f"Confirm move-out reason: {reason}"):
             self.page.get_by_role(
                 "button", name="Select Reason for Move Out", exact=True
             ).click()
@@ -783,11 +784,11 @@ class HBMoveOutPage:
             # than treating them as mutually exclusive.
             
             if skip_payment.count() > 0 and skip_payment.first.is_visible():
-                with allure.step("Select Skip Payment"):
+                with allure.step("Select skip payment"):
                     skip_payment.first.click()
 
             elif take_payment.count() > 0 and take_payment.first.is_visible():
-                            with allure.step("Select Cash when available"):
+                            with allure.step("Select cash when available"):
                                 if not take_payment.first.is_checked():
                                     self._mouse_click(take_payment.first)
                                 # Selecting Take Payment expands the panel to reveal
@@ -889,7 +890,7 @@ class HBMoveOutPage:
                 return True
             if not move_out_drawer.is_visible():
                 return None
-            self.page.wait_for_timeout(250)
+            self.page.wait_for_timeout(waits().poll_interval)
 
         return None if not move_out_drawer.is_visible() else False
 
@@ -904,5 +905,5 @@ class HBMoveOutPage:
         while time.monotonic() < deadline:
             if not move_out_drawer.is_visible():
                 return True
-            self.page.wait_for_timeout(250)
+            self.page.wait_for_timeout(waits().poll_interval)
         return False

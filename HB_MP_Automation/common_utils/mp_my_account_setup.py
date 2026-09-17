@@ -21,7 +21,7 @@ class MPMyAccountSetup:
     uat_storoutlet/Chula Vista): the Robot suite logged in to one fixed,
     pre-made account; here each run's tenant creates its own online account
     with the code emailed to its Mailinator inbox. Card data comes from
-    environments.ini's [payment] section, as for the rental; billing_address
+    secrets.ini's [payment] section, as for the rental; billing_address
     is the address the tenant gave at rental (config/test_data/mp_rental.json
     - address1/address2/zip/state_code/city)."""
 

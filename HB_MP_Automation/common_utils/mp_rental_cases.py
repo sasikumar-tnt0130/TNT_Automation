@@ -8,15 +8,23 @@ then always moved out (user choice 2026-09-14)."""
 import re
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 
 import allure
 from playwright.sync_api import expect
 
+from common_utils.browser_sessions import (
+    capture_page_failure_artifacts,
+    hb_admin_context,
+    mark_storefront_failure_captured,
+)
 from common_utils.mp_legacy_reservation_setup import MPLegacyReservationSetup
 from common_utils.mp_two_step_reservation_setup import MPTwoStepReservationSetup
 from pages.common.hb_lead_management_page import HBLeadManagementPage
 from pages.common.hb_move_out_page import HBMoveOutPage
 from pages.common.hb_tenant_spaces_page import HBTenantSpacesPage
+
+_SCREENSHOTS_DIR = Path(__file__).resolve().parent.parent / "reports" / "screenshots"
 
 
 @dataclass(frozen=True)
@@ -65,7 +73,7 @@ def move_out_rental(
 ) -> None:
     """From the tenant's page when the case already reached it (no Tenants
     grid search), else found through the Tenants list."""
-    with allure.step(f"Clean-up: move out space {space_number}"):
+    with allure.step(f"Clean up: move out space {space_number}"):
         _log_in(hb_login_page)
         page = hb_login_page.page
         if tenant_url:
@@ -97,7 +105,7 @@ def move_out_rental(
 
 
 def cancel_reservation(hb_login_page, timeout: float, hb_property_name: str, guest_email: str) -> None:
-    with allure.step(f"Clean-up: cancel the reservation of {guest_email}"):
+    with allure.step(f"Clean up: cancel the reservation of {guest_email}"):
         _log_in(hb_login_page)
         leads = HBLeadManagementPage(hb_login_page.page, timeout)
         leads.open_leads(hb_property_name)
@@ -113,17 +121,33 @@ def _clean_up(
     space_number: str | None,
     rented: bool,
     tenant_url: str | None,
+    move_out: bool = True,
+    cancel_reservation_hold: bool = True,
 ) -> None:
     """Moves a created rental out - a failure there is raised, as the space
     stays rented. When the case failed before the rental was confirmed, it
     tries the move-out too (the storefront may have created it anyway) and
     otherwise cancels the reservation - a failed case leaves nothing
-    behind."""
+    behind.
+
+    Pass move_out=False (pytest --no-move-out / [cleanup] move_out_after_rental
+    = false) to leave a completed rental in place. Pass
+    cancel_reservation_hold=False (--no-cancel-reservation /
+    [cleanup] cancel_reservation_after = false) to leave an unfinished
+    reservation hold in place for inspection.
+    """
     guest_name = f"{guest['first_name']} {guest['last_name']}"
+    if rented and not move_out:
+        allure.attach(
+            f"{guest['email']}, space {space_number}, property {hb_property_name}",
+            name="move-out skipped (--no-move-out)",
+            attachment_type=allure.attachment_type.TEXT,
+        )
+        return
     if rented:
         move_out_rental(hb_login_page, timeout, hb_property_name, guest_name, space_number, tenant_url)
         return
-    if space_number:
+    if space_number and move_out:
         try:
             move_out_rental(hb_login_page, timeout, hb_property_name, guest_name, space_number)
             return
@@ -132,26 +156,31 @@ def _clean_up(
                 repr(move_out_error)[:1000], name=f"space {space_number} not moved out - cancelling the reservation",
                 attachment_type=allure.attachment_type.TEXT,
             )
+    if not cancel_reservation_hold:
+        allure.attach(
+            f"{guest['email']}, space {space_number}, property {hb_property_name}",
+            name="cancel-reservation skipped (--no-cancel-reservation)",
+            attachment_type=allure.attachment_type.TEXT,
+        )
+        return
     cancel_reservation(hb_login_page, timeout, hb_property_name, guest["email"])
 
 
 def _attach_storefront(page) -> None:
-    """conftest's failure hook captures the HB `page` after clean-up, so a
-    failed case attaches the storefront page (desktop or phone) as it was
-    when the step failed."""
+    """Capture Mariposa as it failed — before cleanup navigates the page to HB.
+
+    Scrolls the error/Pay Now into view so long rental forms are readable in
+    both the viewport shot and the execution video's last storefront frame.
+    """
     try:
-        allure.attach(page.url, name="storefront URL at failure", attachment_type=allure.attachment_type.URI_LIST)
-        allure.attach(
-            page.screenshot(full_page=True), name="storefront at failure",
-            attachment_type=allure.attachment_type.PNG,
+        capture_page_failure_artifacts(
+            page, label="mariposa-storefront", reports_dir=_SCREENSHOTS_DIR
         )
-        allure.attach(
-            page.content(), name="storefront page source at failure",
-            attachment_type=allure.attachment_type.HTML,
-        )
+        mark_storefront_failure_captured()
     except Exception as capture_error:
         allure.attach(
-            repr(capture_error)[:600], name="storefront not captured",
+            repr(capture_error)[:600],
+            name="mariposa-storefront not captured",
             attachment_type=allure.attachment_type.TEXT,
         )
 
@@ -168,9 +197,19 @@ def run_rental_case(
     property_url: str,
     rental_data: dict,
     guest: dict,
+    move_out: bool = True,
+    cancel_reservation_hold: bool = True,
+    skip_hb_on_confirmation_failure: bool = False,
 ) -> None:
     """Reserve, rent, check the emails and the HB tenant, then move out -
-    also when a step fails, once the rental form has named the space."""
+    also when a step fails, once the rental form has named the space.
+    Pass move_out=False to leave a completed rental in place.
+    Pass cancel_reservation_hold=False to leave an unfinished reservation.
+
+    skip_hb_on_confirmation_failure: gateway matrix suites set this so a
+    failed storefront rental-confirmation email check does not continue into
+    HB tenant validation (the failure is still raised after an Allure note).
+    """
     timeout = app_config.getint("browser", "timeout")
     guest_name = f"{guest['first_name']} {guest['last_name']}"
     setup = None
@@ -184,36 +223,86 @@ def run_rental_case(
         setup_class = MPTwoStepReservationSetup if two_step else MPLegacyReservationSetup
         setup = setup_class(storefront_page, environment_config, app_config, property_url=property_url)
         with allure.step("Reserve a unit" + (" as a business" if case.rab else "")):
-            setup.reserve_unit(guest, renting_as_business=case.rab)
+            reservation_code = setup.reserve_unit(guest, renting_as_business=case.rab)
         reserved = True
 
-        with allure.step(f"Rent it: {case.title}"):
+        # The reservation email itself: checked and screenshotted here so a
+        # rental case keeps the email-<code>.png the reservation-only tests
+        # save (user, 2026-09-16 - it was the one screenshot missing from a
+        # rental's folder). The Two-Step flow takes its own property name,
+        # since it rents on the two_step_property rather than the
+        # environment's default.
+        with allure.step("Verify reservation confirmation email"):
             if two_step:
-                bill = setup.rent_reserved_unit(
-                    guest, {**rental_data, "enroll_autopay": case.autopay}, payment_method=case.payment
-                )
-                space_number, amount_paid = bill["space_number"], bill["pay_now"]
-                security_deposit = next(
-                    (amount for label, amount in bill["charges"].items() if "deposit" in label.lower()),
-                    None,
+                setup.assert_confirmation_email(
+                    guest,
+                    reservation_code,
+                    property_name=property_config.lease_configuration_property_name
+                    or property_config.hb_property_name,
                 )
             else:
-                rental = setup.convert_reservation_to_rental(
-                    guest, rental_data, payment_method=case.payment, autopay=case.autopay
-                )
-                space_number, amount_paid = rental["space_number"], rental["total"]
-                security_deposit = rental["security_deposit"]
-                # The move-in date the rental form showed (today on desktop,
-                # the reservation's date on mobile), else today.
-                move_in_date = rental.get("move_in_date") or move_in_date
+                setup.assert_confirmation_email(guest, reservation_code)
+
+        with allure.step(f"Rent it: {case.title}"):
+            try:
+                if two_step:
+                    bill = setup.rent_reserved_unit(
+                        guest, {**rental_data, "enroll_autopay": case.autopay}, payment_method=case.payment
+                    )
+                    space_number, amount_paid = bill["space_number"], bill["pay_now"]
+                    security_deposit = next(
+                        (amount for label, amount in bill["charges"].items() if "deposit" in label.lower()),
+                        None,
+                    )
+                else:
+                    rental = setup.convert_reservation_to_rental(
+                        guest, rental_data, payment_method=case.payment, autopay=case.autopay
+                    )
+                    space_number, amount_paid = rental["space_number"], rental["total"]
+                    security_deposit = rental["security_deposit"]
+                    # The move-in date the rental form showed (today on desktop,
+                    # the reservation's date on mobile), else today.
+                    move_in_date = rental.get("move_in_date") or move_in_date
+            except BaseException as rent_error:
+                if skip_hb_on_confirmation_failure:
+                    with allure.step("HB validation skipped: rental confirmation failed"):
+                        allure.attach(
+                            f"{type(rent_error).__name__}: {rent_error!r}"[:1500],
+                            name="hb-validation-skipped",
+                            attachment_type=allure.attachment_type.TEXT,
+                        )
+                raise
         rented = True
 
-        with allure.step("Rental confirmation" + (" and autopay" if case.autopay else "") + " emails"):
-            setup.assert_rental_emails(
-                guest, space_number, move_in_date, amount_paid, security_deposit, autopay=case.autopay
-            )
+        confirmation_error: BaseException | None = None
+        with allure.step(
+            "Verify rental confirmation" + (" and autopay" if case.autopay else "") + " emails"
+        ):
+            try:
+                setup.assert_rental_emails(
+                    guest, space_number, move_in_date, amount_paid, security_deposit, autopay=case.autopay
+                )
+            except BaseException as error:
+                confirmation_error = error
+                if skip_hb_on_confirmation_failure:
+                    allure.attach(
+                        f"{type(error).__name__}: {error!r}"[:1500],
+                        name="rental-confirmation-failed",
+                        attachment_type=allure.attachment_type.TEXT,
+                    )
 
-        with allure.step("HB: a current tenant, paid" + (", on autopay" if case.autopay else ", no autopay")):
+        if confirmation_error is not None:
+            if skip_hb_on_confirmation_failure:
+                with allure.step("HB validation skipped: rental confirmation failed"):
+                    allure.attach(
+                        "Storefront rental confirmation email check failed; "
+                        "HB current-tenant validation was not run.",
+                        name="hb-validation-skipped",
+                        attachment_type=allure.attachment_type.TEXT,
+                    )
+            raise confirmation_error
+
+        with allure.step("Verify in HB: a current tenant, paid" + (", on autopay" if case.autopay else ", no autopay")):
             _log_in(hb_login_page)
             tenants = HBTenantSpacesPage(hb_login_page.page, timeout)
             tenants.open_tenants(property_config.hb_property_name)
@@ -238,10 +327,51 @@ def run_rental_case(
         space_number = space_number or (setup.space_number if setup else None)
         if reserved:
             try:
-                _clean_up(
-                    hb_login_page, timeout, property_config.hb_property_name, guest, space_number,
-                    rented, tenant_url,
-                )
+                # Desktop rentals share one page for Mariposa + HB. If we
+                # failed on the storefront, clean up in a fresh HB context so
+                # the recorded page (and video) stay on Mariposa at the error.
+                same_page = storefront_page is hb_login_page.page
+                if failure is not None and same_page:
+                    browser = hb_login_page.page.context.browser
+                    if browser is None:
+                        _clean_up(
+                            hb_login_page,
+                            timeout,
+                            property_config.hb_property_name,
+                            guest,
+                            space_number,
+                            rented,
+                            tenant_url,
+                            move_out=move_out,
+                            cancel_reservation_hold=cancel_reservation_hold,
+                        )
+                    else:
+                        with hb_admin_context(
+                            browser, environment_config, app_config
+                        ) as cleanup_login:
+                            _clean_up(
+                                cleanup_login,
+                                timeout,
+                                property_config.hb_property_name,
+                                guest,
+                                space_number,
+                                rented,
+                                tenant_url,
+                                move_out=move_out,
+                                cancel_reservation_hold=cancel_reservation_hold,
+                            )
+                else:
+                    _clean_up(
+                        hb_login_page,
+                        timeout,
+                        property_config.hb_property_name,
+                        guest,
+                        space_number,
+                        rented,
+                        tenant_url,
+                        move_out=move_out,
+                        cancel_reservation_hold=cancel_reservation_hold,
+                    )
             except Exception as cleanup_error:
                 allure.attach(
                     repr(cleanup_error)[:1000],

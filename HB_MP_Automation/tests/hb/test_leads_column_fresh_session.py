@@ -1,5 +1,10 @@
 import allure
 
+from common_utils.browser_sessions import (
+    close_context_with_videos,
+    desktop_context_options,
+    prepare_desktop_page,
+)
 from pages.common.hb_lead_management_page import HBLeadManagementPage
 from pages.common.hb_leads_grid_page import HBLeadsGridPage
 from pages.common.hb_login_page import HBLoginPage
@@ -38,10 +43,10 @@ def test_fresh_session_shows_default_column_order(
 
     # A separate browser context is a freshly launched browser with nothing
     # carried over; logging in there is the same user logging in again.
-    fresh_context = browser.new_context(no_viewport=True)
+    fresh_context = browser.new_context(**desktop_context_options(app_config))
     try:
         fresh_page = fresh_context.new_page()
-        fresh_page.set_default_timeout(timeout)
+        prepare_desktop_page(fresh_page, app_config)
         with allure.step("Log in again in a fresh browser"):
             fresh_login = HBLoginPage(fresh_page, environment_config, timeout)
             fresh_login.open_login_page()
@@ -53,7 +58,7 @@ def test_fresh_session_shows_default_column_order(
         with allure.step("The fresh session shows the default order"):
             fresh_grid.wait_for_column_ids(default_ids)
     finally:
-        fresh_context.close()
+        close_context_with_videos(fresh_context, app_config, name="fresh-session-video")
 
     # Tidy the first session. Its layout never left this browser, so there's
     # nothing to undo on the server - skip quietly if HB has ended it.

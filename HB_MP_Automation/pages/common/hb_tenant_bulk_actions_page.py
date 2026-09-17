@@ -4,6 +4,7 @@ import allure
 from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError, expect
 
 from common_utils.wrapper_methods import log_method_exceptions
+from common_utils.waits import waits
 
 
 class HBTenantBulkActionsPage:
@@ -46,13 +47,13 @@ class HBTenantBulkActionsPage:
         if live_agent_notification.count() > 0 and live_agent_notification.first.is_visible():
             if close_notification.count() > 0 and close_notification.first.is_visible():
                 try:
-                    close_notification.first.click(timeout=5000)
+                    close_notification.first.click(timeout=waits().short)
                 except PlaywrightTimeoutError:
                     pass
 
     @log_method_exceptions
     def open_tenants(self, property_name: str) -> None:
-        with allure.step(f"Open Tenants for {property_name}"):
+        with allure.step(f"Open tenants for {property_name}"):
             self._close_live_agent_notification()
             search_box = self.page.locator("#search-box")
             expect(search_box).to_be_visible(timeout=self.timeout)
@@ -62,7 +63,7 @@ class HBTenantBulkActionsPage:
                 "cell", name=property_name, exact=True
             )
             try:
-                expect(property_cell).to_be_visible(timeout=5000)
+                expect(property_cell).to_be_visible(timeout=waits().short)
             except AssertionError:
                 search_input.fill(property_name)
                 expect(property_cell).to_be_visible(timeout=self.timeout)
@@ -70,7 +71,7 @@ class HBTenantBulkActionsPage:
             # Same multi-property picker quirk as HBLeadManagementPage.
             # open_leads: only a click on the row selects it there.
             try:
-                expect(property_cell).to_be_hidden(timeout=5000)
+                expect(property_cell).to_be_hidden(timeout=waits().short)
             except AssertionError:
                 property_cell.locator("xpath=ancestor::tr[1]").dispatch_event(
                     "click"
@@ -91,7 +92,7 @@ class HBTenantBulkActionsPage:
 
     @log_method_exceptions
     def search_tenants(self, search_term: str) -> None:
-        with allure.step(f"Search For Tenant: {search_term}"):
+        with allure.step(f"Search for tenant: {search_term}"):
             # Kept so select_all_tenants can confirm (and if need be
             # re-apply) the filter before selecting anyone to message.
             self._search_term = search_term
@@ -145,7 +146,7 @@ class HBTenantBulkActionsPage:
 
     @log_method_exceptions
     def select_all_tenants(self) -> int:
-        with allure.step("Select Bulk Edit And Select All"):
+        with allure.step("Select bulk edit and select all"):
             self._close_live_agent_notification()
             bulk_edit = self.page.locator(
                 'button[name="QA-HbHeader-HbIcon-mdi-square-edit-outline"]'
@@ -178,7 +179,7 @@ class HBTenantBulkActionsPage:
                 for _ in range(10):
                     if selected == filtered_count:
                         break
-                    self.page.wait_for_timeout(500)
+                    self.page.wait_for_timeout(waits().poll_interval)
                     selected = self._selected_count()
                 else:
                     raise AssertionError(
@@ -193,7 +194,7 @@ class HBTenantBulkActionsPage:
             match = pattern.search(self.page.locator("body").inner_text())
             if match:
                 return match
-            self.page.wait_for_timeout(500)
+            self.page.wait_for_timeout(waits().poll_interval)
         return None
 
     @log_method_exceptions
@@ -235,7 +236,7 @@ class HBTenantBulkActionsPage:
     @log_method_exceptions
     def start_communication(self, channel: str) -> None:
         # channel: "Send Email" or "Send SMS" - the two radio labels.
-        with allure.step(f"Bulk Actions: {channel}"):
+        with allure.step(f"Open bulk actions: {channel}"):
             self._communications_button().click()
             channel_option = self.page.locator("label").filter(
                 has_text=re.compile(rf"^\s*{re.escape(channel)}\s*$")
@@ -259,7 +260,7 @@ class HBTenantBulkActionsPage:
 
     @log_method_exceptions
     def compose_email(self, subject: str, body: str) -> None:
-        with allure.step("Compose Email"):
+        with allure.step("Compose email"):
             # By role for the same reason as compose_sms's message field.
             subject_field = self.page.get_by_role(
                 "textbox", name="Subject Title", exact=True
@@ -281,7 +282,7 @@ class HBTenantBulkActionsPage:
         """Reads the "Confirm & Send to Recipients" review: the Total
         Recipients count, and the recipient email addresses listed (empty
         for SMS, whose review lists phone numbers instead)."""
-        with allure.step("Confirm & Send to Recipients: review"):
+        with allure.step("Confirm and send to recipients: review"):
             heading = self.page.get_by_text("Confirm & Send to Recipients", exact=True)
             expect(heading).to_be_visible(timeout=self.timeout)
             # Confirmed live: the review first renders with "Total
@@ -306,7 +307,7 @@ class HBTenantBulkActionsPage:
 
     @log_method_exceptions
     def confirm_and_send(self) -> None:
-        with allure.step("Confirm & Send"):
+        with allure.step("Confirm and send"):
             send_button = self.page.get_by_role(
                 "button", name="Confirm & Send", exact=True
             )
@@ -318,7 +319,7 @@ class HBTenantBulkActionsPage:
 
     @log_method_exceptions
     def close_bulk_actions(self) -> None:
-        with allure.step("Close Bulk Actions without sending"):
+        with allure.step("Close bulk actions without sending"):
             close_button = self.page.locator(
                 'button[name="QA-ActionsPanelHeader-HbIcon-mdi-close"]'
             )

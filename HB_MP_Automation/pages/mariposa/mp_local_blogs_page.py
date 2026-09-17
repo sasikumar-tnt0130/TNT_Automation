@@ -5,6 +5,7 @@ from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError, ex
 
 from common_utils.wrapper_methods import log_method_exceptions
 from pages.common.hb_settings_navigation import HBSettingsNavigation
+from common_utils.waits import waits
 
 
 class MPLocalBlogsPage:
@@ -63,7 +64,7 @@ class MPLocalBlogsPage:
             for _ in range(3):
                 self.nav.switch_app_filter_to_website()
                 try:
-                    expect(link).to_be_visible(timeout=15000)
+                    expect(link).to_be_visible(timeout=waits().long)
                     break
                 except AssertionError:
                     continue
@@ -86,13 +87,13 @@ class MPLocalBlogsPage:
         # bounded window to land; a timeout here isn't fatal (some
         # environments never go fully idle), just best-effort settling.
         try:
-            self.page.wait_for_load_state("networkidle", timeout=10000)
+            self.page.wait_for_load_state("networkidle", timeout=waits().medium)
         except PlaywrightTimeoutError:
             pass
 
     @log_method_exceptions
     def fill_h1_title(self, title: str) -> None:
-        with allure.step(f"Set Local Blogs H1 Title: {title}"):
+        with allure.step(f"Set Local Blogs H1 title: {title}"):
             self._ensure_open()
             self.page.get_by_role(
                 "textbox", name="Enter H1 Tag For Local Blog page"
@@ -114,13 +115,13 @@ class MPLocalBlogsPage:
         for _ in range(6):
             if value:
                 break
-            self.page.wait_for_timeout(500)
+            self.page.wait_for_timeout(waits().poll_interval)
             value = field.input_value()
         return value
 
     @log_method_exceptions
     def expand_facility_content(self) -> None:
-        with allure.step("Expand Facility Content section"):
+        with allure.step("Expand facility content section"):
             self._ensure_open()
             header = self.page.get_by_text("Facility Content", exact=True)
             content = self.page.get_by_text("Add Title and Content", exact=True)
@@ -133,7 +134,7 @@ class MPLocalBlogsPage:
         """Fill the last content block if it's still empty, otherwise
         click "+ Add Content" for a new one, then fill it - so repeated
         calls build up multiple blocks."""
-        with allure.step(f"Add Facility Content block: {title}"):
+        with allure.step(f"Add facility content block: {title}"):
             self.expand_facility_content()
             title_fields = self.page.get_by_role("textbox", name="Enter Title")
             if title_fields.count() > 0 and (title_fields.last.input_value() or "") == "":
@@ -181,7 +182,7 @@ class MPLocalBlogsPage:
 
     @log_method_exceptions
     def remove_content_block(self, index: int) -> None:
-        with allure.step(f"Remove Facility Content block #{index}"):
+        with allure.step(f"Remove facility content block #{index}"):
             self.expand_facility_content()
             # The remove control is an aria-hidden <i class="mdi-close">
             # icon, not a role=button - get_by_role can never match it.
@@ -189,7 +190,7 @@ class MPLocalBlogsPage:
 
     @log_method_exceptions
     def expand_meta_details(self) -> None:
-        with allure.step("Expand Meta Details section"):
+        with allure.step("Expand meta details section"):
             self._ensure_open()
             header = self.page.get_by_role(
                 "button", name=re.compile(r"^Meta Details")
@@ -203,7 +204,7 @@ class MPLocalBlogsPage:
 
     @log_method_exceptions
     def fill_meta_title(self, text: str) -> None:
-        with allure.step(f"Set Local Blogs Meta Title: {text}"):
+        with allure.step(f"Set Local Blogs meta title: {text}"):
             self.expand_meta_details()
             self.page.get_by_role("textbox", name="Enter meta title").fill(text)
 
@@ -214,7 +215,7 @@ class MPLocalBlogsPage:
 
     @log_method_exceptions
     def fill_meta_description(self, text: str) -> None:
-        with allure.step(f"Set Local Blogs Meta Description: {text}"):
+        with allure.step(f"Set Local Blogs meta description: {text}"):
             self.expand_meta_details()
             self.page.get_by_role("textbox", name="Enter meta Description").fill(text)
 
@@ -234,7 +235,7 @@ class MPLocalBlogsPage:
 
     @log_method_exceptions
     def click_tokens_for_meta_details(self) -> None:
-        with allure.step("Click Tokens for Meta Details"):
+        with allure.step("Click Tokens for meta details"):
             self._ensure_open()
             self.page.get_by_role(
                 "button", name="Tokens for Meta Details", exact=True

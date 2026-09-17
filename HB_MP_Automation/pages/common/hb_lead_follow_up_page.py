@@ -4,6 +4,7 @@ import allure
 from playwright.sync_api import Page, expect
 
 from common_utils.wrapper_methods import first_visible, log_method_exceptions
+from common_utils.waits import waits
 
 
 class HBLeadFollowUpPage:
@@ -64,7 +65,7 @@ class HBLeadFollowUpPage:
                     and all(reading == details for reading in readings[-6:])
                 ):
                     break
-                self.page.wait_for_timeout(500)
+                self.page.wait_for_timeout(waits().poll_interval)
             else:
                 raise AssertionError(
                     f"Lead Follow-Up lease details never settled: {readings[-1]}"
@@ -84,7 +85,7 @@ class HBLeadFollowUpPage:
                     break
                 first_visible(self.page.locator('[name="QA-v-card-HbIcon-mdi-close"]')).click()
                 try:
-                    expect(self.move_in_cost).to_be_hidden(timeout=5000)
+                    expect(self.move_in_cost).to_be_hidden(timeout=waits().short)
                 except AssertionError:
                     continue
             expect(self.move_in_cost).to_be_hidden(timeout=self.timeout)

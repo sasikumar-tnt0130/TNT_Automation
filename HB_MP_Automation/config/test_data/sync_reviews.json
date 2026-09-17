@@ -1,18 +1,10 @@
 {
-  "dev": {
-    "property_with_review_ids": "",
-    "property_without_review_ids": ""
-  },
-  "uat": {
+  "defaults": {
     "property_with_review_ids": "",
     "property_without_review_ids": ""
   },
   "uat_storoutlet": {
     "property_with_review_ids": "340079519 - Irvine",
     "property_without_review_ids": "340079517 - Bellflower"
-  },
-  "stage": {
-    "property_with_review_ids": "",
-    "property_without_review_ids": ""
   }
 }

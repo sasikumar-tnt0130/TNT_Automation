@@ -3,47 +3,23 @@ import pytest
 
 from common_utils.lease_configuration_setup import LeaseConfigurationSetup
 from common_utils.mp_two_step_reservation_setup import MPTwoStepReservationSetup
-from pages.common.hb_login_page import HBLoginPage
-from pages.mariposa.mp_unit_search_page import MPUnitSearchPage
 
 
 @pytest.fixture(scope="class")
-def _two_step_flow_configured(browser, environment_config, app_config) -> None:
-    """One-time admin-side setup for every test in this class - see
-    test_legacy_reservation.py's fixture of the same shape for the full
-    rationale (server-side HB setting, own class-scoped login/context
-    instead of every test repeating it)."""
-    timeout = app_config.getint("browser", "timeout")
-    permissions = [
-        p.strip()
-        for p in app_config.get("browser", "permissions", fallback="").split(",")
-        if p.strip()
-    ]
-    context = browser.new_context(permissions=permissions, no_viewport=True)
-    setup_page = context.new_page()
-    setup_page.set_default_timeout(timeout)
-    # Own context for the storefront self-heal check (enable_two_step_
-    # clickwrap_and_super_lease's rental_page arg) - kept separate from
-    # the admin context above, which stays on HB admin throughout.
-    storefront_context = browser.new_context(permissions=permissions, no_viewport=True)
-    try:
-        hb_login_page = HBLoginPage(setup_page, environment_config, timeout)
-        if hb_login_page.open_login_page():
-            hb_login_page.submit_login_credentials()
-        hb_login_page.assert_login_successful()
+def _two_step_flow_configured(
+    browser, environment_config, app_config, two_step_property
+) -> None:
+    """One-time admin setup on a temporary HB context (one Chromium context)."""
+    from common_utils.browser_sessions import hb_admin_context
 
-        storefront_page = storefront_context.new_page()
-        storefront_page.set_default_timeout(timeout)
-        rental_page = MPUnitSearchPage(
-            storefront_page, environment_config.mp_base_url, timeout
-        )
-
+    with hb_admin_context(browser, environment_config, app_config) as hb_login_page:
         LeaseConfigurationSetup(
-            hb_login_page, environment_config, app_config
-        ).enable_two_step_clickwrap_and_super_lease(rental_page=rental_page)
-    finally:
-        storefront_context.close()
-        context.close()
+            hb_login_page,
+            environment_config,
+            app_config,
+            property_name=two_step_property.lease_configuration_property_name,
+            fms_property_name=two_step_property.fms_property_name,
+        ).enable_two_step_clickwrap_and_super_lease()
 
 
 @allure.feature("MP Reservation")
@@ -55,68 +31,94 @@ class TestTwoStepReservation:
     # Mariposa-only property that can never enable Two-Step Rental - a
     # hard, permanent site-side restriction (attempting it there leaves
     # the switch snapping back to unchecked no matter how long you
-    # wait), not a config toggle. This suite runs against Rutland/
-    # Lightning Storage instead (the staging environment's own banner
-    # documents this property as "2 Step Configured") - its identity is
-    # resolved per-test below via property_landing_page_url rather than
-    # environment_config's own default property.
+    # wait), not a config toggle. This suite runs against
+    # properties.ini two_step_property (e.g. Rutland/Lightning Storage)
+    # via the two_step_property fixture.
 
     @allure.title("Individual reservation can be completed - Desktop")
+    @pytest.mark.smoke
+    @pytest.mark.testrail("C683626")
     def test_individual_reservation_desktop(
-        self, page, environment_config, app_config, mp_guest
+        self, page, environment_config, app_config, mp_guest, two_step_property
     ) -> None:
-        reservation = MPTwoStepReservationSetup(page, environment_config, app_config)
+        reservation = MPTwoStepReservationSetup(
+            page,
+            environment_config,
+            app_config,
+            property_config=two_step_property,
+        )
         reservation_code = reservation.reserve_unit(mp_guest, renting_as_business=False)
         assert reservation_code, "Expected a non-empty reservation code"
         reservation.assert_confirmation_email(mp_guest, reservation_code)
 
     @allure.title("Individual reservation can be completed - Mobile")
+    @pytest.mark.smoke
+    @pytest.mark.testrail("C683626")
     def test_individual_reservation_mobile(
         self,
         mobile_page,
         environment_config,
         app_config,
         mp_guest,
+        two_step_property,
         property_landing_page_url,
     ) -> None:
         property_url = property_landing_page_url(
             environment_config.mp_base_url,
-            environment_config.mp_state,
-            environment_config.mp_city,
+            two_step_property.mp_state,
+            two_step_property.mp_city,
         )
         reservation = MPTwoStepReservationSetup(
-            mobile_page, environment_config, app_config, property_url=property_url
+            mobile_page,
+            environment_config,
+            app_config,
+            property_url=property_url,
+            property_config=two_step_property,
         )
         reservation_code = reservation.reserve_unit(mp_guest, renting_as_business=False)
         assert reservation_code, "Expected a non-empty reservation code"
         reservation.assert_confirmation_email(mp_guest, reservation_code)
 
     @allure.title("Reserve As Business reservation can be completed - Desktop")
+    @pytest.mark.smoke
+    @pytest.mark.testrail("C683635")
     def test_rab_reservation_desktop(
-        self, page, environment_config, app_config, mp_guest
+        self, page, environment_config, app_config, mp_guest, two_step_property
     ) -> None:
-        reservation = MPTwoStepReservationSetup(page, environment_config, app_config)
+        reservation = MPTwoStepReservationSetup(
+            page,
+            environment_config,
+            app_config,
+            property_config=two_step_property,
+        )
         reservation_code = reservation.reserve_unit(mp_guest, renting_as_business=True)
         assert reservation_code, "Expected a non-empty reservation code"
         reservation.assert_confirmation_email(mp_guest, reservation_code)
 
     @allure.title("Reserve As Business reservation can be completed - Mobile")
+    @pytest.mark.smoke
+    @pytest.mark.testrail("C683635")
     def test_rab_reservation_mobile(
         self,
         mobile_page,
         environment_config,
         app_config,
         mp_guest,
+        two_step_property,
         property_landing_page_url,
     ) -> None:
         property_url = property_landing_page_url(
             environment_config.mp_base_url,
-            environment_config.mp_state,
-            environment_config.mp_city,
+            two_step_property.mp_state,
+            two_step_property.mp_city,
         )
         reservation = MPTwoStepReservationSetup(
-            mobile_page, environment_config, app_config, property_url=property_url
+            mobile_page,
+            environment_config,
+            app_config,
+            property_url=property_url,
+            property_config=two_step_property,
         )
         reservation_code = reservation.reserve_unit(mp_guest, renting_as_business=True)
         assert reservation_code, "Expected a non-empty reservation code"
-    #     reservation.assert_confirmation_email(mp_guest, reservation_code)
+        reservation.assert_confirmation_email(mp_guest, reservation_code)

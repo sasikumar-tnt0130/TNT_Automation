@@ -1,11 +1,9 @@
 import re
 
 import allure
-import pytest
 from playwright.sync_api import expect
 
 from common_utils.mp_two_step_reservation_setup import MPTwoStepReservationSetup
-from config.config_reader import load_property
 from pages.common.hb_move_out_page import HBMoveOutPage
 from pages.common.hb_tenant_spaces_page import HBTenantSpacesPage
 from pages.common.hb_transaction_history_page import HBTransactionHistoryPage
@@ -22,10 +20,10 @@ from pages.common.hb_transaction_history_page import HBTransactionHistoryPage
 )
 def test_void_remove_autopay_and_move_out(
     page,
-    environment,
     environment_config,
     app_config,
     mp_guest,
+    two_step_property,
     property_landing_page_url,
     hb_login_page,
     test_data,
@@ -35,17 +33,19 @@ def test_void_remove_autopay_and_move_out(
     # OP1): void the payment, void the invoice it paid (a reason is
     # required), remove the AutoPay card, move out. Each run creates a
     # tenant and a sandbox card charge, then voids it and closes the lease.
-    property_key = app_config.get(environment, "two_step_property", fallback="").strip()
-    if not property_key:
-        pytest.skip(f"No two_step_property configured for {environment} in environments.ini")
-    two_step_property = load_property(app_config, environment, property_key)
     property_url = property_landing_page_url(
         environment_config.mp_base_url, two_step_property.mp_state, two_step_property.mp_city
     )
     timeout = app_config.getint("browser", "timeout")
     rental_data = test_data("mp_rental")
     guest_name = f"{mp_guest['first_name']} {mp_guest['last_name']}"
-    rental = MPTwoStepReservationSetup(page, environment_config, app_config, property_url=property_url)
+    rental = MPTwoStepReservationSetup(
+        page,
+        environment_config,
+        app_config,
+        property_url=property_url,
+        property_config=two_step_property,
+    )
 
     with allure.step("Reserve and rent a unit with AutoPay"):
         rental.reserve_unit(mp_guest, renting_as_business=False)

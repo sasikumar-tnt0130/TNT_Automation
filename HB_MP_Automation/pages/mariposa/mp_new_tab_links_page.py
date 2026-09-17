@@ -6,6 +6,7 @@ from playwright.sync_api import Locator, Page, TimeoutError as PlaywrightTimeout
 
 from common_utils.wrapper_methods import log_method_exceptions
 from pages.mariposa.mp_unit_search_page import MPUnitSearchPage
+from common_utils.waits import waits
 
 # The storefront footer's general pages -> their paths.
 FOOTER_PAGES = {
@@ -70,8 +71,8 @@ class MPNewTabLinksPage(MPUnitSearchPage):
         for attempt in range(3):
             self._dismiss_banners()
             try:
-                with self.page.context.expect_page(timeout=15000) as new_tab:
-                    link.click(timeout=10000)
+                with self.page.context.expect_page(timeout=waits().long) as new_tab:
+                    link.click(timeout=waits().medium)
                 break
             except PlaywrightTimeoutError:
                 if attempt == 2:

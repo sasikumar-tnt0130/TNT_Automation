@@ -5,6 +5,7 @@ from playwright.sync_api import Locator, Page, TimeoutError as PlaywrightTimeout
 
 from common_utils.wrapper_methods import log_method_exceptions
 from pages.common.hb_settings_navigation import HBSettingsNavigation
+from common_utils.waits import waits
 
 
 class MPWebsiteGeneralSettingsPage:
@@ -29,7 +30,7 @@ class MPWebsiteGeneralSettingsPage:
 
     @log_method_exceptions
     def open(self) -> None:
-        with allure.step("Open Website General Settings"):
+        with allure.step("Open Website general settings"):
             # See HBNameAndAddressInfoPage.open's identical guard - a
             # test that already navigated this page to the MP storefront
             # (a different domain) before calling open() again leaves
@@ -45,7 +46,7 @@ class MPWebsiteGeneralSettingsPage:
             for _ in range(3):
                 self.nav.switch_app_filter_to_website()
                 try:
-                    expect(link).to_be_visible(timeout=15000)
+                    expect(link).to_be_visible(timeout=waits().long)
                     break
                 except AssertionError:
                     continue
@@ -58,7 +59,7 @@ class MPWebsiteGeneralSettingsPage:
             # Same async-fetch race as HBNameAndAddressInfoPage.open -
             # best-effort only, getters below poll independently too.
             try:
-                self.page.wait_for_load_state("networkidle", timeout=10000)
+                self.page.wait_for_load_state("networkidle", timeout=waits().medium)
             except PlaywrightTimeoutError:
                 pass
 
@@ -71,7 +72,7 @@ class MPWebsiteGeneralSettingsPage:
         for _ in range(6):
             if value:
                 break
-            self.page.wait_for_timeout(500)
+            self.page.wait_for_timeout(waits().poll_interval)
             value = locator.input_value()
         return value
 

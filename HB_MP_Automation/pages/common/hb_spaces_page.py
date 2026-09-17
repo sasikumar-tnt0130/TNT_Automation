@@ -4,6 +4,7 @@ import allure
 from playwright.sync_api import Locator, Page, expect
 
 from common_utils.wrapper_methods import log_method_exceptions
+from common_utils.waits import waits
 
 
 class HBSpacesPage:
@@ -52,7 +53,7 @@ class HBSpacesPage:
         """Picks the first Available space in the list and opens Tenant
         Onboarding on it with "Create New Lead/Move-In" (confirmed live
         2026-09-14, Chula Vista #O2). Returns the space number ("#O2")."""
-        with allure.step("Pick an Available space and start Create New Lead/Move-In"):
+        with allure.step("Start Create New Lead/Move-In from an available space"):
             row = (
                 self.page.locator(".ag-row")
                 .filter(
@@ -94,7 +95,7 @@ class HBSpacesPage:
                 self.page.keyboard.press("Enter")
                 try:
                     expect(row).to_have_count(1, timeout=self.timeout)
-                    expect(status_cell).to_have_text(expected, timeout=10000)
+                    expect(status_cell).to_have_text(expected, timeout=waits().medium)
                     return
                 except AssertionError:
                     seen = status_cell.first.text_content() if status_cell.count() else None

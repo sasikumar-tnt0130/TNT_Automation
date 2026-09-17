@@ -26,6 +26,8 @@ class TestTwoStepSuperleaseIndividual:
     @pytest.mark.no_autopay
     @pytest.mark.desktop
     @pytest.mark.individual
+    @pytest.mark.smoke
+    @pytest.mark.testrail("C683630")
     def test_2step_flow_superlease_signing_credit_card_desktop_view_individual(
         self, rental_case_runner
     ) -> None:
@@ -38,6 +40,8 @@ class TestTwoStepSuperleaseIndividual:
     @pytest.mark.no_autopay
     @pytest.mark.desktop
     @pytest.mark.individual
+    @pytest.mark.smoke
+    @pytest.mark.testrail("C683630")
     def test_2step_flow_superlease_signing_ach_desktop_view_individual(
         self, rental_case_runner
     ) -> None:
@@ -50,6 +54,8 @@ class TestTwoStepSuperleaseIndividual:
     @pytest.mark.autopay
     @pytest.mark.desktop
     @pytest.mark.individual
+    @pytest.mark.smoke
+    @pytest.mark.testrail("C683630")
     def test_2step_flow_superlease_signing_credit_card_with_autopay_desktop_view_individual(
         self, rental_case_runner
     ) -> None:
@@ -62,6 +68,8 @@ class TestTwoStepSuperleaseIndividual:
     @pytest.mark.autopay
     @pytest.mark.desktop
     @pytest.mark.individual
+    @pytest.mark.smoke
+    @pytest.mark.testrail("C683630")
     def test_2step_flow_superlease_signing_ach_with_autopay_desktop_view_individual(
         self, rental_case_runner
     ) -> None:
@@ -74,6 +82,8 @@ class TestTwoStepSuperleaseIndividual:
     @pytest.mark.no_autopay
     @pytest.mark.mobile
     @pytest.mark.individual
+    @pytest.mark.smoke
+    @pytest.mark.testrail("C683630")
     def test_2step_flow_superlease_signing_credit_card_mobile_view_individual(
         self, rental_case_runner
     ) -> None:
@@ -86,6 +96,8 @@ class TestTwoStepSuperleaseIndividual:
     @pytest.mark.no_autopay
     @pytest.mark.mobile
     @pytest.mark.individual
+    @pytest.mark.smoke
+    @pytest.mark.testrail("C683630")
     def test_2step_flow_superlease_signing_ach_mobile_view_individual(
         self, rental_case_runner
     ) -> None:
@@ -98,6 +110,8 @@ class TestTwoStepSuperleaseIndividual:
     @pytest.mark.autopay
     @pytest.mark.mobile
     @pytest.mark.individual
+    @pytest.mark.smoke
+    @pytest.mark.testrail("C683630")
     def test_2step_flow_superlease_signing_credit_card_with_autopay_mobile_view_individual(
         self, rental_case_runner
     ) -> None:
@@ -110,6 +124,8 @@ class TestTwoStepSuperleaseIndividual:
     @pytest.mark.autopay
     @pytest.mark.mobile
     @pytest.mark.individual
+    @pytest.mark.smoke
+    @pytest.mark.testrail("C683630")
     def test_2step_flow_superlease_signing_ach_with_autopay_mobile_view_individual(
         self, rental_case_runner
     ) -> None:

@@ -1,10 +1,8 @@
 from datetime import date, timedelta
 
 import allure
-import pytest
 
 from common_utils.mp_two_step_reservation_setup import MPTwoStepReservationSetup
-from config.config_reader import load_property
 from pages.common.hb_lead_management_page import HBLeadManagementPage
 
 
@@ -13,10 +11,10 @@ from pages.common.hb_lead_management_page import HBLeadManagementPage
 @allure.story("Reserve a Space in Mariposa + Retire a Lead From HummingBird")
 def test_cancel_storefront_reservation_from_lead(
     page,
-    environment,
     environment_config,
     app_config,
     mp_guest,
+    two_step_property,
     property_landing_page_url,
     hb_login_page,
 ) -> None:
@@ -25,16 +23,16 @@ def test_cancel_storefront_reservation_from_lead(
     # lead that holds a reservation (confirmed live 2026-09-13, Chula Vista)
     # - it only offers "Cancel Reservation", so that's what's checked (user
     # choice). Runs on the environment's Two-Step property.
-    property_key = app_config.get(environment, "two_step_property", fallback="").strip()
-    if not property_key:
-        pytest.skip(f"No two_step_property configured for {environment} in environments.ini")
-    two_step_property = load_property(app_config, environment, property_key)
     property_url = property_landing_page_url(
         environment_config.mp_base_url, two_step_property.mp_state, two_step_property.mp_city
     )
     timeout = app_config.getint("browser", "timeout")
     reservation = MPTwoStepReservationSetup(
-        page, environment_config, app_config, property_url=property_url
+        page,
+        environment_config,
+        app_config,
+        property_url=property_url,
+        property_config=two_step_property,
     )
 
     with allure.step("Reserve a space on the storefront"):

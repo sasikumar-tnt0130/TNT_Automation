@@ -4,7 +4,6 @@ import allure
 import pytest
 
 from common_utils.mp_two_step_reservation_setup import MPTwoStepReservationSetup
-from config.config_reader import load_property
 from pages.common.hb_tenant_spaces_page import HBTenantSpacesPage
 
 
@@ -17,24 +16,22 @@ from pages.common.hb_tenant_spaces_page import HBTenantSpacesPage
     "Rent Storage w/ enrolling for auto-debit + Convert Reservation to Rental + "
     "Validate Tenant email for Rental (Two-Step)"
 )
+@pytest.mark.smoke
+@pytest.mark.testrail("C683630")
 def test_rent_reserved_unit_with_autopay(
     page,
-    environment,
     environment_config,
     app_config,
     mp_guest,
+    two_step_property,
     property_landing_page_url,
     hb_login_page,
     test_data,
 ) -> None:
     # Old Robot suite's 8872, 8885, 10604 and 10633 on one storefront rental
-    # of the environment's Two-Step property (environments.ini
+    # of the environment's Two-Step property (properties.ini
     # `two_step_property`). Walked live 2026-09-13 on uat_storoutlet/Chula
     # Vista. Each run creates a tenant and a sandbox card charge there.
-    property_key = app_config.get(environment, "two_step_property", fallback="").strip()
-    if not property_key:
-        pytest.skip(f"No two_step_property configured for {environment} in environments.ini")
-    two_step_property = load_property(app_config, environment, property_key)
     property_url = property_landing_page_url(
         environment_config.mp_base_url, two_step_property.mp_state, two_step_property.mp_city
     )
@@ -42,7 +39,11 @@ def test_rent_reserved_unit_with_autopay(
     enroll_autopay = rental_data.get("enroll_autopay", True)
     guest_name = f"{mp_guest['first_name']} {mp_guest['last_name']}"
     reservation = MPTwoStepReservationSetup(
-        page, environment_config, app_config, property_url=property_url
+        page,
+        environment_config,
+        app_config,
+        property_url=property_url,
+        property_config=two_step_property,
     )
 
     with allure.step("Reserve a unit on the Two-Step property"):

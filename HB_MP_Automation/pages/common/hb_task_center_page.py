@@ -52,7 +52,7 @@ class HBTaskCenterPage:
         on older leads' task cards (confirmed live 2026-09-13 - matching on
         the space alone opened an unrelated lead). Opening Follow-Up starts
         HB's follow-up timer on the lead; nothing is logged or saved here."""
-        with allure.step(f"Open Lead Follow-Up: {guest_name}, space {space_number}"):
+        with allure.step(f"Open lead follow-up: {guest_name}, space {space_number}"):
             # Confirmed live (2026-09-13): .tasks-list lazy-loads its tasks
             # page by page as it's scrolled to the bottom (19 -> 29 -> ... ->
             # 86), and new web reservations sit near the end - so the list

@@ -1,9 +1,7 @@
 import allure
-import pytest
 
 from common_utils.mp_my_account_setup import MPMyAccountSetup
 from common_utils.mp_two_step_reservation_setup import MPTwoStepReservationSetup
-from config.config_reader import load_property
 from pages.common.hb_tenant_spaces_page import HBTenantSpacesPage
 
 
@@ -18,10 +16,10 @@ from pages.common.hb_tenant_spaces_page import HBTenantSpacesPage
 )
 def test_my_account_pay_bill_and_autopay(
     page,
-    environment,
     environment_config,
     app_config,
     mp_guest,
+    two_step_property,
     property_landing_page_url,
     hb_login_page,
     test_data,
@@ -31,17 +29,19 @@ def test_my_account_pay_bill_and_autopay(
     # environment's Two-Step property. Walked live 2026-09-13 on
     # uat_storoutlet/Chula Vista. Each run creates a tenant, an online
     # account and two sandbox card charges (the rental and one month ahead).
-    property_key = app_config.get(environment, "two_step_property", fallback="").strip()
-    if not property_key:
-        pytest.skip(f"No two_step_property configured for {environment} in environments.ini")
-    two_step_property = load_property(app_config, environment, property_key)
     property_url = property_landing_page_url(
         environment_config.mp_base_url, two_step_property.mp_state, two_step_property.mp_city
     )
     rental_data = test_data("mp_rental")
     guest_name = f"{mp_guest['first_name']} {mp_guest['last_name']}"
     card_last4 = environment_config.card_number[-4:]
-    rental = MPTwoStepReservationSetup(page, environment_config, app_config, property_url=property_url)
+    rental = MPTwoStepReservationSetup(
+        page,
+        environment_config,
+        app_config,
+        property_url=property_url,
+        property_config=two_step_property,
+    )
     # Billing address = the address the tenant gave at rental (Get Access).
     account = MPMyAccountSetup(page, environment_config, app_config, billing_address=rental_data)
 

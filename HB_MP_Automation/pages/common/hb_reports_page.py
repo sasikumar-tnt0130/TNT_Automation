@@ -5,6 +5,7 @@ import allure
 from playwright.sync_api import Locator, Page, expect
 
 from common_utils.wrapper_methods import log_method_exceptions
+from common_utils.waits import waits
 
 # The report grids are virtualized ag-grids whose pinned and centre columns
 # render as separate .ag-row elements - merge them by row-index.
@@ -77,7 +78,7 @@ class HBReportsPage:
             # and click it back once if that turned out to close it.
             for _ in range(2):
                 try:
-                    expect(name).to_be_visible(timeout=3000)
+                    expect(name).to_be_visible(timeout=waits().tiny)
                     break
                 except AssertionError:
                     collection_title.click()
@@ -113,7 +114,7 @@ class HBReportsPage:
         )
         for _ in range(2):
             try:
-                expect(name).to_be_visible(timeout=3000)
+                expect(name).to_be_visible(timeout=waits().tiny)
                 break
             except AssertionError:
                 collection_title.click()
@@ -181,7 +182,7 @@ class HBReportsPage:
                 for cells in self._rendered_rows().values():
                     if cells.get("lead_email") == email:
                         return cells
-                self.page.wait_for_timeout(500)
+                self.page.wait_for_timeout(waits().poll_interval)
             raise AssertionError(f"{email} isn't listed in this report")
 
     @log_method_exceptions
@@ -208,7 +209,7 @@ class HBReportsPage:
                     empty_since = empty_since or time.monotonic()
                     if time.monotonic() - empty_since >= 5:
                         return set()
-                self.page.wait_for_timeout(500)
+                self.page.wait_for_timeout(waits().poll_interval)
             else:
                 raise AssertionError(f"Report search for {search_term!r} never settled")
             return {

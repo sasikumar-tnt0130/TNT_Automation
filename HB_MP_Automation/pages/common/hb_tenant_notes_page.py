@@ -4,6 +4,7 @@ import allure
 from playwright.sync_api import Locator, Page, expect
 
 from common_utils.wrapper_methods import log_method_exceptions
+from common_utils.waits import waits
 
 # Confirmed live 2026-09-14 (uat_storoutlet). Robot's category loop knew 11 of
 # these; "Profile" and "Reverse Move-out" are new.
@@ -66,14 +67,14 @@ class HBTenantNotesPage:
 
     @log_method_exceptions
     def close_restored_drawers(self, wait_seconds: float = 0) -> None:
-        with allure.step("Close drawers HB reopened"):
+        with allure.step("Close drawers Hummingbird reopened"):
             drawers = self.page.locator(
                 "aside.v-navigation-drawer--open.v-navigation-drawer--temporary"
             )
             for _ in range(int(wait_seconds * 2)):
                 if drawers.count():
                     break
-                self.page.wait_for_timeout(500)
+                self.page.wait_for_timeout(waits().poll_interval)
             not_required = self.page.locator(
                 '.v-dialog--active button[name="QA-HbBottomActionBar-hb-primary-button-Not-required"]'
             )
@@ -119,9 +120,9 @@ class HBTenantNotesPage:
                 search.fill(full_name.split()[-1])
                 self.page.keyboard.press("Enter")
                 try:
-                    expect(cell).to_be_visible(timeout=15000)
+                    expect(cell).to_be_visible(timeout=waits().long)
                     cell.click()
-                    expect(self.page).to_have_url(re.compile(r"/contacts/[^/?#]+"), timeout=15000)
+                    expect(self.page).to_have_url(re.compile(r"/contacts/[^/?#]+"), timeout=waits().long)
                     break
                 except AssertionError:
                     if attempt == 2:
@@ -181,7 +182,7 @@ class HBTenantNotesPage:
         select.click()
         items = self._menu_items()
         expect(items.first).to_be_visible(timeout=self.timeout)
-        self.page.wait_for_timeout(500)
+        self.page.wait_for_timeout(waits().poll_interval)
         options = [" ".join(text.split()) for text in items.filter(visible=True).all_text_contents()]
         self.page.keyboard.press("Escape")
         expect(items).to_have_count(0, timeout=self.timeout)
@@ -204,7 +205,7 @@ class HBTenantNotesPage:
     @log_method_exceptions
     def choose(self, showing: str, option: str) -> None:
         """Switches the filter currently showing `showing` to `option`."""
-        with allure.step(f"Filter: {showing} -> {option}"):
+        with allure.step(f"Set filter: {showing} -> {option}"):
             select = self._select_showing(showing)
             expect(select).to_be_visible(timeout=self.timeout)
             select.click()
@@ -251,7 +252,7 @@ class HBTenantNotesPage:
             if steady >= 3:
                 return
             last = count
-            self.page.wait_for_timeout(500)
+            self.page.wait_for_timeout(waits().poll_interval)
 
     @log_method_exceptions
     def _save_button(self) -> Locator:
@@ -299,7 +300,7 @@ class HBTenantNotesPage:
     @log_method_exceptions
     def note_form_options(self) -> dict:
         """Add Note's category and space options; the draft is closed unsaved."""
-        with allure.step("Add Note: category and space options"):
+        with allure.step("Add note: category and space options"):
             form = self._start_note()
             selects = self._form_selects(form)
             options = {
@@ -311,7 +312,7 @@ class HBTenantNotesPage:
 
     @log_method_exceptions
     def add_note(self, text: str, category: str, space: str, pin: bool) -> None:
-        with allure.step(f"Add Note: {category}, space {space}, pinned={pin}"):
+        with allure.step(f"Add note: {category}, space {space}, pinned={pin}"):
             form = self._start_note()
             selects = self._form_selects(form)
             self._choose(selects.nth(0), category)
@@ -360,7 +361,7 @@ class HBTenantNotesPage:
 
     @log_method_exceptions
     def assert_note_card(self, token: str, text: str, category: str, space: str, pinned: bool) -> None:
-        with allure.step(f"Note {token}: Note({category}), Space {space}, pinned={pinned}"):
+        with allure.step(f"Verify note {token}: Note({category}), Space {space}, pinned={pinned}"):
             card = self.note_card(token)
             expect(card).to_be_visible(timeout=self.timeout)
             expect(card).to_contain_text(
@@ -400,7 +401,7 @@ class HBTenantNotesPage:
     def assert_pinned_first(self, tokens: list[str]) -> None:
         """The notes carrying `tokens` are pinned, and every pinned card is
         listed before every unpinned one."""
-        with allure.step(f"Pinned notes {tokens} are listed on top"):
+        with allure.step(f"Verify pinned notes {tokens} are listed on top"):
             cards = None
             for _ in range(int(self.timeout / 500)):
                 cards = self._cards().evaluate_all(
@@ -421,7 +422,7 @@ class HBTenantNotesPage:
                     and (not unpinned_at or max(pinned_at) < min(unpinned_at))
                 ):
                     return
-                self.page.wait_for_timeout(500)
+                self.page.wait_for_timeout(waits().poll_interval)
             listed = [
                 ("pinned   " if card["pinned"] else "unpinned ") + " ".join(card["text"].split())[:70]
                 for card in (cards or [])[:6]
@@ -430,7 +431,7 @@ class HBTenantNotesPage:
 
     @log_method_exceptions
     def expect_notes(self, visible: list[str], hidden: list[str]) -> None:
-        with allure.step(f"Listed: {visible}; not listed: {hidden}"):
+        with allure.step(f"Verify listed: {visible}; not listed: {hidden}"):
             for token in visible:
                 expect(self.note_card(token)).to_be_visible(timeout=self.timeout)
             for token in hidden:
@@ -440,7 +441,7 @@ class HBTenantNotesPage:
     def assert_note_read_only(self, token: str) -> None:
         # Robot 14467: typing into a saved note does nothing, and its text can
         # be selected (copied).
-        with allure.step(f"Note {token} can't be edited and its text is selectable"):
+        with allure.step(f"Verify note {token} can't be edited and its text is selectable"):
             card = self.note_card(token)
             expect(card.locator('[contenteditable="true"], textarea, input')).to_have_count(0)
             text = card.get_by_text(re.compile(re.escape(token))).first

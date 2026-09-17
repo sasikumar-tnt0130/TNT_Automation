@@ -5,6 +5,7 @@ import allure
 from playwright.sync_api import Page, expect
 
 from common_utils.wrapper_methods import log_method_exceptions
+from common_utils.waits import waits
 
 # Header cells in display order: pinned-left first, then by the grid's own
 # horizontal position (ag-grid positions header cells with style.left; DOM
@@ -74,7 +75,7 @@ class HBLeadsGridPage:
                 self._open_view_menu()
                 self.page.get_by_role("option", name=view_name, exact=True).click()
                 try:
-                    expect(view_selector).to_have_value(view_name, timeout=5000)
+                    expect(view_selector).to_have_value(view_name, timeout=waits().short)
                     break
                 except AssertionError:
                     if attempt == 2:
@@ -86,7 +87,7 @@ class HBLeadsGridPage:
         loading_rows = self.page.get_by_text("Loading", exact=True)
         deadline = time.monotonic() + self.timeout / 1000
         while time.monotonic() < deadline and loading_rows.count() > 0:
-            self.page.wait_for_timeout(250)
+            self.page.wait_for_timeout(waits().poll_interval)
 
     @log_method_exceptions
     def _headers(self) -> list[dict]:
@@ -99,7 +100,7 @@ class HBLeadsGridPage:
             if headers and headers == previous:
                 return headers
             previous = headers
-            self.page.wait_for_timeout(700)
+            self.page.wait_for_timeout(waits().poll_interval)
         raise AssertionError("The Leads grid's column headers never settled")
 
     @log_method_exceptions
@@ -127,7 +128,7 @@ class HBLeadsGridPage:
             ids = self.column_ids()
             if ids == expected_ids:
                 return
-            self.page.wait_for_timeout(500)
+            self.page.wait_for_timeout(waits().poll_interval)
         raise AssertionError(f"Leads columns are {ids}, expected {expected_ids}")
 
     @log_method_exceptions
@@ -176,7 +177,7 @@ class HBLeadsGridPage:
             titles = self.column_titles()
             if titles == expected_titles:
                 return
-            self.page.wait_for_timeout(500)
+            self.page.wait_for_timeout(waits().poll_interval)
         raise AssertionError(f"Leads columns are {titles}, expected {expected_titles}")
 
     @log_method_exceptions
@@ -189,7 +190,7 @@ class HBLeadsGridPage:
             for index in range(buttons.count()):
                 if buttons.nth(index).is_visible():
                     return buttons.nth(index)
-            self.page.wait_for_timeout(250)
+            self.page.wait_for_timeout(waits().poll_interval)
         raise AssertionError("The Leads side panel never opened")
 
     @log_method_exceptions
@@ -201,7 +202,7 @@ class HBLeadsGridPage:
         its items are the active menu's .v-list-item rows. Added columns are
         appended after the existing ones, and the panel stays open after
         "Set Columns" is applied."""
-        with allure.step(f"Set Columns: add {', '.join(column_names)}"):
+        with allure.step(f"Set columns: add {', '.join(column_names)}"):
             self.page.locator('button[name="QA-HbHeader-HbIcon-mdi-table-actions-custom-2"]').click()
             close_button = self._wait_for_panel_close_button()
             panel = close_button.locator(

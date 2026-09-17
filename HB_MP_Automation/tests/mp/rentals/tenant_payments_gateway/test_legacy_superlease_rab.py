@@ -21,6 +21,9 @@ class TestSuperleaseRab:
     @pytest.mark.no_autopay
     @pytest.mark.desktop
     @pytest.mark.rab
+    @pytest.mark.smoke
+    @pytest.mark.testrail("C10478")
+    @pytest.mark.testrail("C20849")
     def test_legacy_flow_superlease_signing_credit_card_desktop_view_rab(
         self, rental_case_runner
     ) -> None:
@@ -33,6 +36,9 @@ class TestSuperleaseRab:
     @pytest.mark.no_autopay
     @pytest.mark.desktop
     @pytest.mark.rab
+    @pytest.mark.smoke
+    @pytest.mark.testrail("C10478")
+    @pytest.mark.testrail("C20849")
     def test_legacy_flow_superlease_signing_ach_desktop_view_rab(
         self, rental_case_runner
     ) -> None:
@@ -45,6 +51,10 @@ class TestSuperleaseRab:
     @pytest.mark.autopay
     @pytest.mark.desktop
     @pytest.mark.rab
+    @pytest.mark.smoke
+    @pytest.mark.testrail("C10478")
+    @pytest.mark.testrail("C20849")
+    @pytest.mark.testrail("C64998")
     def test_legacy_flow_superlease_signing_credit_card_with_autopay_desktop_view_rab(
         self, rental_case_runner
     ) -> None:
@@ -57,6 +67,9 @@ class TestSuperleaseRab:
     @pytest.mark.autopay
     @pytest.mark.desktop
     @pytest.mark.rab
+    @pytest.mark.smoke
+    @pytest.mark.testrail("C10478")
+    @pytest.mark.testrail("C20849")
     def test_legacy_flow_superlease_signing_ach_with_autopay_desktop_view_rab(
         self, rental_case_runner
     ) -> None:
@@ -69,6 +82,9 @@ class TestSuperleaseRab:
     @pytest.mark.no_autopay
     @pytest.mark.mobile
     @pytest.mark.rab
+    @pytest.mark.smoke
+    @pytest.mark.testrail("C10478")
+    @pytest.mark.testrail("C20849")
     def test_legacy_flow_superlease_signing_credit_card_mobile_view_rab(
         self, rental_case_runner
     ) -> None:
@@ -81,6 +97,9 @@ class TestSuperleaseRab:
     @pytest.mark.no_autopay
     @pytest.mark.mobile
     @pytest.mark.rab
+    @pytest.mark.smoke
+    @pytest.mark.testrail("C10478")
+    @pytest.mark.testrail("C20849")
     def test_legacy_flow_superlease_signing_ach_mobile_view_rab(
         self, rental_case_runner
     ) -> None:
@@ -93,6 +112,10 @@ class TestSuperleaseRab:
     @pytest.mark.autopay
     @pytest.mark.mobile
     @pytest.mark.rab
+    @pytest.mark.smoke
+    @pytest.mark.testrail("C10478")
+    @pytest.mark.testrail("C20849")
+    @pytest.mark.testrail("C64998")
     def test_legacy_flow_superlease_signing_credit_card_with_autopay_mobile_view_rab(
         self, rental_case_runner
     ) -> None:
@@ -105,6 +128,9 @@ class TestSuperleaseRab:
     @pytest.mark.autopay
     @pytest.mark.mobile
     @pytest.mark.rab
+    @pytest.mark.smoke
+    @pytest.mark.testrail("C10478")
+    @pytest.mark.testrail("C20849")
     def test_legacy_flow_superlease_signing_ach_with_autopay_mobile_view_rab(
         self, rental_case_runner
     ) -> None:

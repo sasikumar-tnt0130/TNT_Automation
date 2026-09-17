@@ -4,6 +4,7 @@ import allure
 from playwright.sync_api import Page, expect
 
 from common_utils.wrapper_methods import log_method_exceptions
+from common_utils.waits import waits
 
 
 class MPMyAccountPage:
@@ -35,7 +36,7 @@ class MPMyAccountPage:
             match = re.search(pattern, self.page.locator("body").inner_text())
             if match:
                 return float(match.group(1).replace(",", ""))
-            self.page.wait_for_timeout(500)
+            self.page.wait_for_timeout(waits().poll_interval)
         raise AssertionError(f"No amount matching {pattern!r} on My Account")
 
     @log_method_exceptions
@@ -125,7 +126,7 @@ class MPMyAccountPage:
                 break
             self.page.locator('label[for="billingAdress-undefined"]').first.click()
             try:
-                expect(address1).to_be_visible(timeout=3000)
+                expect(address1).to_be_visible(timeout=waits().tiny)
             except AssertionError:
                 continue
         expect(address1).to_be_visible(timeout=self.timeout)
@@ -303,6 +304,222 @@ class MPMyAccountPage:
             card = self.page.locator(".card-header").filter(has_text=f"Space {space_number}").first
             expect(card).to_be_visible(timeout=self.timeout)
             return re.sub(r"\s+", " ", card.inner_text()).strip()
+
+    @log_method_exceptions
+    def open_account_home(self) -> None:
+        """Open /account/?tab=1. After a Legacy rental that set Account
+        Password, the storefront session is already authenticated and this
+        lands on My Account directly (walked 2026-09-16 stage/Garden Grove)."""
+        with allure.step("Open My Account"):
+            self.page.goto(
+                f"{self.base_url.rstrip('/')}/account/?tab=1",
+                wait_until="domcontentloaded",
+            )
+            expect(self.page.get_by_role("heading", name="My Account")).to_be_visible(
+                timeout=self.timeout
+            )
+
+    @log_method_exceptions
+    def open_account_info_tab(self) -> None:
+        """ACCOUNT INFO (?tab=3): primary / alternate contact, facility info,
+        space-related documents. Walked live 2026-09-16 stage/Garden Grove."""
+        with allure.step("Open ACCOUNT INFO"):
+            if "tab=3" not in self.page.url:
+                self.page.goto(
+                    f"{self.base_url.rstrip('/')}/account/?tab=3",
+                    wait_until="domcontentloaded",
+                )
+            expect(
+                self.page.get_by_text("Tenant Primary Contact Information", exact=True)
+            ).to_be_visible(timeout=self.timeout)
+
+    @log_method_exceptions
+    def change_primary_mailing_address(self, new_address: dict) -> None:
+        """Edit Tenant Primary Contact Information → Save → sign the
+        \"Change of address - Old and New Tokens\" document.
+
+        Walked live 2026-09-16 stage/Garden Grove (Legacy rental, PMS):
+        fields account_address1 / account_address2 / account-holder-zipcode /
+        account-holder-state / account-holder-city; Save opens the storefront
+        document-signing widget for Change of Address."""
+        with allure.step(
+            f"Change primary mailing address to {new_address['address1']}, "
+            f"{new_address['city']}"
+        ):
+            self.open_account_info_tab()
+            primary = self.page.get_by_text(
+                "Tenant Primary Contact Information", exact=True
+            )
+            expect(primary).to_be_visible(timeout=self.timeout)
+            primary.locator(
+                "xpath=following::button[normalize-space()='Edit'][1]"
+            ).click()
+            address1 = self.page.locator("#account_address1")
+            expect(address1).to_be_visible(timeout=self.timeout)
+            address1.fill(new_address["address1"])
+            self.page.locator("#account_address2").fill(
+                new_address.get("address2", "")
+            )
+            self.page.locator("#account-holder-zipcode").fill(new_address["zip"])
+            self.page.locator("#account-holder-state").select_option(
+                new_address.get("state_code") or new_address["state"]
+            )
+            self.page.locator("#account-holder-city").fill(new_address["city"])
+            self.page.get_by_role("button", name="Save", exact=True).click()
+            # Save opens the Sign Document modal with the Change of Address
+            # widget (doc-title may be aria-hidden; heading + iframe are the
+            # reliable signals - walked 2026-09-16).
+            expect(
+                self.page.get_by_role("heading", name="Sign Document")
+            ).to_be_visible(timeout=self.timeout)
+            expect(
+                self.page.get_by_text(
+                    re.compile(r"Change of address\s*-\s*Old and New", re.I)
+                ).first
+            ).to_be_attached(timeout=self.timeout)
+            expect(
+                self.page.locator('iframe[src*="document-signing"]').first
+            ).to_be_attached(timeout=self.timeout)
+            self._sign_change_of_address_widget()
+            expect(
+                self.page.get_by_role("heading", name="My Account")
+            ).to_be_visible(timeout=self.timeout)
+
+    @log_method_exceptions
+    def assert_change_of_address_in_document_center(self, space_number: str) -> None:
+        """After a Change of Address save: primary contact shows the new
+        mailing street, and Document Center / ACCOUNT INFO mentions Change
+        of Address when the signed copy has landed."""
+        with allure.step(f"Account reflects Change of Address for {space_number}"):
+            self.page.goto(
+                f"{self.base_url.rstrip('/')}/account/?tab=3",
+                wait_until="domcontentloaded",
+            )
+            expect(self.page.get_by_role("heading", name="My Account")).to_be_visible(
+                timeout=self.timeout
+            )
+            # Space-related docs / Document Center may list the COA after sign.
+            coa = self.page.get_by_text(re.compile(r"Change of address", re.I))
+            if coa.count() == 0:
+                self.page.goto(
+                    f"{self.base_url.rstrip('/')}/account/?tab=2",
+                    wait_until="domcontentloaded",
+                )
+                coa = self.page.get_by_text(re.compile(r"Change of address", re.I))
+            expect(coa.first).to_be_visible(timeout=self.timeout)
+
+    @log_method_exceptions
+    def _hide_chatbot_overlays(self) -> None:
+        # Walked 2026-09-16: chatbot iframes sit over the adopt-signature
+        # "Accept and sign" control; force-clicks still land on the chatbot
+        # and the field never gains .signed. Hiding them lets a normal click
+        # complete signing.
+        self.page.evaluate(
+            """() => {
+              for (const sel of [
+                'iframe[src*="chatbot"]',
+                '#alita-chatbot',
+                'iframe[title="Chatbot"]',
+                'iframe[title="Chatbot Launcher"]',
+              ]) {
+                document.querySelectorAll(sel).forEach(el => {
+                  el.style.setProperty('display', 'none', 'important');
+                  el.style.setProperty('pointer-events', 'none', 'important');
+                  el.style.setProperty('visibility', 'hidden', 'important');
+                });
+              }
+            }"""
+        )
+
+    @log_method_exceptions
+    def _sign_change_of_address_widget(self, initials: str = "AT") -> None:
+        """Sign the Change of Address widget and Finalize.
+
+        Address changes only persist after Finalize completes and the Sign
+        Document modal closes (walked 2026-09-16). Do not navigate away while
+        the post-Finalize spinner is still up."""
+        self._hide_chatbot_overlays()
+        frame = self.page.frame_locator('iframe[src*="document-signing"]')
+        sign_heading = self.page.get_by_role("heading", name="Sign Document")
+        start = frame.get_by_role("button", name="Start Signing", exact=True)
+        if start.count() and start.first.is_visible():
+            start.first.click()
+            self.page.wait_for_timeout(1000)
+        finalized = False
+        for _ in range(40):
+            if sign_heading.count() == 0 or not sign_heading.first.is_visible():
+                finalized = True
+                break
+            finalize = frame.get_by_role("button", name="Finalize Document")
+            if (
+                finalize.count()
+                and finalize.first.is_visible()
+                and finalize.first.is_enabled()
+            ):
+                finalize.first.click()
+                # Iframe detaches immediately; parent modal may spin until
+                # the storefront applies the address and closes the dialog.
+                try:
+                    expect(sign_heading).to_be_hidden(timeout=self.timeout)
+                except AssertionError:
+                    expect(
+                        self.page.get_by_role("heading", name="My Account")
+                    ).to_be_visible(timeout=self.timeout)
+                finalized = True
+                break
+            unsigned = frame.locator("img.replaced-text:not(.signed)")
+            if unsigned.count() == 0:
+                next_btn = frame.get_by_role("button", name="Next", exact=True)
+                if next_btn.count() and next_btn.first.is_enabled():
+                    next_btn.first.click()
+                    self.page.wait_for_timeout(800)
+                    continue
+                self.page.wait_for_timeout(500)
+                continue
+            field = unsigned.first
+            field_id = field.get_attribute("data-id")
+            field.click()
+            self.page.wait_for_timeout(500)
+            signed = frame.locator(
+                f'img.replaced-text.signed[data-id="{field_id}"]'
+            )
+            if signed.count():
+                continue
+            signature = frame.locator("input.signature-input")
+            if signature.count() and signature.first.is_visible():
+                # Keep the widget's autofilled tenant name when present;
+                # otherwise type initials into the adopt box.
+                if not signature.first.input_value().strip():
+                    signature.first.fill(initials)
+                signature.first.blur()
+                accept = frame.get_by_role(
+                    "button", name="Accept and sign", exact=True
+                )
+                for _attempt in range(10):
+                    if signed.count():
+                        break
+                    self._hide_chatbot_overlays()
+                    if accept.count() and accept.first.is_visible():
+                        accept.first.click()
+                    self.page.wait_for_timeout(600)
+                if not signed.count():
+                    raise AssertionError(
+                        "Change of Address Accept and sign did not mark the "
+                        "signature field as signed"
+                    )
+            next_btn = frame.get_by_role("button", name="Next", exact=True)
+            if (
+                next_btn.count()
+                and next_btn.first.is_visible()
+                and next_btn.first.is_enabled()
+            ):
+                next_btn.first.click()
+                self.page.wait_for_timeout(800)
+        if not finalized:
+            raise AssertionError(
+                "Change of Address signing did not Finalize / close the "
+                "Sign Document modal"
+            )
 
     @log_method_exceptions
     def open_account_info_for_space(self, space_number: str) -> str:

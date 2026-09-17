@@ -22,6 +22,7 @@ import re
 import allure
 from playwright.sync_api import Locator, Page, Response, expect
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+from common_utils.waits import waits
 
 ACH_FIELD_IDS = ("'nameOnAccount'", "'routingNumber'", "'accountNumber'", "'confirmAccountNumber'")
 # The form's gateway settings request, e.g. GET .../companies/<co>/properties/
@@ -38,15 +39,30 @@ def select_state(select: Locator, state: str, state_code: str) -> None:
         select.select_option(value=state_code)
 
 
-def set_autopay(page: Page, timeout: float, enroll: bool) -> None:
+def set_autopay(page: Page, timeout: float, enroll: bool, when: str = "payment section") -> None:
+    """Sets "Autopay Enrollment" (#auto-debit) to the case's autopay setting
+    (RentalCase.autopay, passed on as enroll_autopay). The storefront can
+    show it already ticked (both 2Step walks on stage, 2026-09-15): an
+    autopay case leaves a ticked box alone, a non-autopay case unticks it,
+    and an unticked box is ticked only for an autopay case. What was found
+    and done goes in the report, labelled with `when`."""
     autopay = page.locator("#auto-debit")
     if autopay.count() == 0:
         if enroll:
             raise AssertionError("The rental form has no Autopay Enrollment checkbox")
         return
-    if autopay.is_checked() != enroll:
-        page.locator('label[for="auto-debit"]').first.click()
-    expect(autopay).to_be_checked(checked=enroll, timeout=timeout)
+    was_checked = autopay.is_checked()
+    wanted = "ticked" if enroll else "unticked"
+    if was_checked == enroll:
+        action = f"already {wanted} - left as is"
+    else:
+        tick_checkbox(page, timeout, autopay, page.locator('label[for="auto-debit"]').first, checked=enroll)
+        action = f"was {'ticked' if was_checked else 'unticked'} - now {wanted}"
+    allure.attach(
+        f"{'Autopay' if enroll else 'Non-autopay'} case: Autopay Enrollment {action}",
+        name=f"autopay ({when})",
+        attachment_type=allure.attachment_type.TEXT,
+    )
 
 
 def _attach_payment_section(page: Page) -> None:
@@ -75,7 +91,7 @@ def payment_method_offered(page: Page, timeout: float, method: str) -> bool:
     if method == "card":
         return radio.count() > 0 or page.locator('input[type="radio"][value="ach"]').count() == 0
     try:
-        expect(radio.first).to_be_attached(timeout=15000)
+        expect(radio.first).to_be_attached(timeout=waits().long)
         return True
     except AssertionError:
         return False
@@ -178,7 +194,7 @@ def fill_business_representative(page: Page, timeout: float, guest: dict, rental
             with page.expect_response(
                 lambda response: "/validate-phone/" in response.url
                 and digits in re.sub(r"%[0-9A-Fa-f]{2}|\D", "", response.url),
-                timeout=10000,
+                timeout=waits().medium,
             ):
                 mobile.fill(guest["mobile"])
         except PlaywrightTimeoutError:
@@ -195,29 +211,31 @@ def fill_business_representative(page: Page, timeout: float, guest: dict, rental
         fill("City *", rental_data["city"], required=False)
 
 
-def tick_checkbox(page: Page, timeout: float, checkbox: Locator, label: Locator) -> None:
-    """Ticks a custom-styled checkbox: a label click, then a click event
-    dispatched on the box, then one on its label - each after re-checking
-    the box (so a late earlier click is never undone) and followed by a
-    short check. No forced check: that clicks at the box's position, so
-    whatever covers the box gets the click - on the phone RAB reservation
-    form a sticky .storage-info bar covers "I am renting as a business", and
-    a run with a forced check ended on the storefront's home page
-    (2026-09-15)."""
-    for tick in (
-        lambda: label.click(timeout=5000),
+def tick_checkbox(
+    page: Page, timeout: float, checkbox: Locator, label: Locator, checked: bool = True
+) -> None:
+    """Ticks a custom-styled checkbox (or, with checked=False, unticks it): a
+    label click, then a click event dispatched on the box, then one on its
+    label - each after re-checking the box (so a late earlier click is never
+    undone) and followed by a short check. No forced check: that clicks at
+    the box's position, so whatever covers the box gets the click - on the
+    phone RAB reservation form a sticky .storage-info bar covers "I am
+    renting as a business", and a run with a forced check ended on the
+    storefront's home page (2026-09-15)."""
+    for click in (
+        lambda: label.click(timeout=waits().short),
         lambda: checkbox.dispatch_event("click"),
         lambda: label.dispatch_event("click"),
     ):
-        if checkbox.is_checked():
+        if checkbox.is_checked() == checked:
             return
         try:
-            tick()
-            expect(checkbox).to_be_checked(timeout=5000)
+            click()
+            expect(checkbox).to_be_checked(checked=checked, timeout=waits().short)
             return
         except Exception:
             continue
-    expect(checkbox).to_be_checked(timeout=timeout)
+    expect(checkbox).to_be_checked(checked=checked, timeout=timeout)
 
 
 def tick_agreement(page: Page, timeout: float) -> None:
@@ -284,20 +302,50 @@ def enter_ach(
         field.fill(value)
 
 
+BILLING_ADDRESS_KEYS = ("address1", "city", "state", "state_code", "zip")
+
+
+def missing_billing_values(address: dict) -> list[str]:
+    """The billing address values the test data lacks (address2 may be empty)."""
+    return [key for key in BILLING_ADDRESS_KEYS if not str(address.get(key) or "").strip()]
+
+
 def fill_billing_address(page: Page, timeout: float, address: dict) -> None:
-    """Only when the form shows a billing address (it did for ACH)."""
+    """Fills the billing address when the form shows one (it did for ACH).
+    When address["billing_address_required"] is set - a gateway marked
+    `billing_address = required` in environments.ini, e.g. Authorize.Net for
+    cards (user, 2026-09-15) - a missing value in the test data, or a form
+    with no "Billing Address" box, raises instead of being skipped."""
+    required = bool(address.get("billing_address_required"))
+    if required and (missing := missing_billing_values(address)):
+        raise AssertionError(
+            f"This gateway needs a billing address, but the rental test data lacks {missing} "
+            "(config/test_data/mp_rental.json)"
+        )
     free_text = page.locator('input[placeholder="Billing Address"]').filter(visible=True)
+    # The box can render a moment after the payment method is picked, so a
+    # required one gets up to 10 s.
+    for _ in range(20 if required else 1):
+        if free_text.count() > 0:
+            break
+        if required:
+            page.wait_for_timeout(waits().poll_interval)
     if free_text.count() == 0:
+        if required:
+            raise AssertionError(
+                "This gateway needs a billing address (environments.ini: billing_address = required), "
+                "but the rental form shows no Billing Address box"
+            )
         return
     with allure.step("Billing address"):
         free_text.first.fill(
-            f"{address['address1']}, {address['address2']}, "
+            f"{address['address1']}, {address.get('address2', '')}, "
             f"{address['city']}, {address['state_code']} {address['zip']}"
         )
         address1 = page.locator("#billingAddress1")
         expect(address1).to_be_visible(timeout=timeout)
         address1.fill(address["address1"])
-        page.locator("#billingAddress2").fill(address["address2"])
+        page.locator("#billingAddress2").fill(address.get("address2", ""))
         page.locator("#billingZip").fill(address["zip"])
         page.locator("#billingCity").fill(address["city"])
         select_state(page.locator("#billingState"), address["state"], address["state_code"])

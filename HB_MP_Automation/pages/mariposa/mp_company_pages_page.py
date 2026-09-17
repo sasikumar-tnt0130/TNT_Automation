@@ -5,6 +5,7 @@ from playwright.sync_api import Page, expect
 
 from common_utils.wrapper_methods import log_method_exceptions
 from pages.common.hb_settings_navigation import HBSettingsNavigation
+from common_utils.waits import waits
 
 
 class MPCompanyPagesPage:
@@ -72,7 +73,7 @@ class MPCompanyPagesPage:
         in shared environments."""
         for title in self.created_titles:
             try:
-                self.delete_company_page(title, timeout=5000)
+                self.delete_company_page(title, timeout=waits().short)
             except Exception:
                 pass
         self.created_titles = []
@@ -84,7 +85,7 @@ class MPCompanyPagesPage:
                 "textbox", name="Search By Title or Slug"
             )
             try:
-                expect(search_box).to_be_visible(timeout=10000)
+                expect(search_box).to_be_visible(timeout=waits().medium)
             except AssertionError:
                 # Confirmed live: the Settings panel can get stuck
                 # mid-render with no error, leaving this search box
@@ -175,4 +176,5 @@ class MPCompanyPagesPage:
                 "Company Page details successfully updated", exact=True
             )
             expect(success).to_be_visible(timeout=self.timeout)
-        self.nav.clear_cache()
+            self.nav.mark_website_cache_clear_pending()
+            self.nav.clear_cache()

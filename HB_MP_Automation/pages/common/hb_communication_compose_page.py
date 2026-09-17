@@ -6,6 +6,7 @@ from playwright.sync_api import Locator, expect
 
 from common_utils.wrapper_methods import log_method_exceptions
 from pages.common.hb_communication_filters_page import HBCommunicationFiltersPage
+from common_utils.waits import waits
 
 # Texts only ever go to the reserved fictional range the test guests use
 # (conftest's mp_guest / hb_lead_guest) - never to an older (707) 719-xxxx
@@ -75,7 +76,7 @@ class HBCommunicationComposePage(HBCommunicationFiltersPage):
             expect(item).to_be_visible(timeout=self.timeout)
             item.click()
             try:
-                expect(window).to_be_visible(timeout=15000 if attempt == 0 else self.timeout)
+                expect(window).to_be_visible(timeout=waits().long if attempt == 0 else self.timeout)
                 return window
             except AssertionError:
                 if attempt == 1:
@@ -96,7 +97,7 @@ class HBCommunicationComposePage(HBCommunicationFiltersPage):
         # Text read none (2026-09-14). With none after the wait, the send
         # guards refuse.
         try:
-            expect(window.locator(".hb-chip-overflow").filter(visible=True).first).to_be_visible(timeout=20000)
+            expect(window.locator(".hb-chip-overflow").filter(visible=True).first).to_be_visible(timeout=waits().extra_long)
         except AssertionError:
             pass
         return [
@@ -171,7 +172,7 @@ class HBCommunicationComposePage(HBCommunicationFiltersPage):
         one of its other contacts, and the file `attachment`) - for `space`
         when given, see _send_for_space - and returns the recipients. Refuses
         to send unless every recipient is a Mailinator test inbox."""
-        with allure.step(f"Send Email: {subject}"):
+        with allure.step(f"Send email: {subject}"):
             window = self._open_compose("Send Email")
             if also_to:
                 self._tick_recipient(window, also_to)
@@ -208,7 +209,7 @@ class HBCommunicationComposePage(HBCommunicationFiltersPage):
         SMS-enabled Alternate) - for `space` when given, and returns the
         recipients. Refuses unless every recipient is a fictional 555-01xx
         number."""
-        with allure.step(f"Send Text: {message}"):
+        with allure.step(f"Send text: {message}"):
             window = self._open_compose("Send Text")
             if only_to:
                 self._only_recipient(window, only_to)
@@ -255,7 +256,7 @@ class HBCommunicationComposePage(HBCommunicationFiltersPage):
     def log_phone_call(self, note: str, direction: str = "Incoming") -> None:
         """Logs a call - Call Direction "Incoming" (the window's default) or
         "Outgoing" (radios, confirmed live 2026-09-14)."""
-        with allure.step(f"Log Phone Call ({direction}): {note}"):
+        with allure.step(f"Log phone call ({direction}): {note}"):
             window = self._open_compose("Log Phone Call")
             window.locator("label").filter(has_text=re.compile(rf"^\s*{re.escape(direction)}\s*$")).first.click()
             expect(window.get_by_role("radio", name=direction, exact=True)).to_be_checked(timeout=self.timeout)
@@ -266,7 +267,7 @@ class HBCommunicationComposePage(HBCommunicationFiltersPage):
     @log_method_exceptions
     def add_plain_note(self, text: str) -> None:
         """Add Note with its defaults (category, space) and Pin No."""
-        with allure.step(f"Add Note: {text}"):
+        with allure.step(f"Add note: {text}"):
             window = self._open_compose("Add Note")
             self._type_in_editor(window, text)
             window.locator('button[name="QA-v-card-hb-primary-button-Save"]').last.click()
@@ -276,7 +277,7 @@ class HBCommunicationComposePage(HBCommunicationFiltersPage):
     def expect_sent_card(self, token: str, kind: str, space: str | None = None) -> None:
         """The card carrying `token` is of `kind` ("email", "text", "call",
         "note"), dated today and - when given - for `space`."""
-        with allure.step(f"A {kind} card for {token}, dated today"):
+        with allure.step(f"Verify {kind} card for {token}, dated today"):
             card = self.note_card(token)
             expect(card).to_be_visible(timeout=self.timeout)
             expect(card).to_contain_text(CARD_KINDS[kind], timeout=self.timeout)
@@ -324,5 +325,5 @@ class HBCommunicationComposePage(HBCommunicationFiltersPage):
             ]
             if cards and all(card_kind == kind for card_kind, _ in cards):
                 return cards
-            self.page.wait_for_timeout(500)
+            self.page.wait_for_timeout(waits().poll_interval)
         return cards
