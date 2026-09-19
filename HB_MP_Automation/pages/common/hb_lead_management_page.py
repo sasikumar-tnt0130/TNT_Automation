@@ -49,6 +49,12 @@ class HBLeadManagementPage:
     @log_method_exceptions
     def open_leads(self, property_name: str) -> None:
         with allure.step(f"Open leads for {property_name}"):
+            # Same Settings-overlay issue as HBTenantSpacesPage.open_tenants.
+            from pages.common.hb_tenant_spaces_page import HBTenantSpacesPage
+
+            HBTenantSpacesPage(
+                self.page, self.timeout
+            )._ensure_main_shell_for_property_nav()
             self._close_live_agent_notification()
             search_box = self.page.locator("#search-box")
             expect(search_box).to_be_visible(timeout=self.timeout)

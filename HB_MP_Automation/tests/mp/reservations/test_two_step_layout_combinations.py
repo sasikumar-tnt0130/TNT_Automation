@@ -65,15 +65,14 @@ def _lease_setup(hb_login_page, environment_config, app_config, prop: PropertyCo
 
 @pytest.fixture(scope="class")
 def _two_step_flow_configured(
-    browser, environment_config, app_config, two_step_property
+    hb_admin_session, environment_config, app_config, two_step_property
 ) -> None:
-    """One-time admin setup on a temporary HB context (one Chromium context)."""
-    from common_utils.browser_sessions import hb_admin_context
-
-    with hb_admin_context(browser, environment_config, app_config) as hb_login_page:
-        _lease_setup(
-            hb_login_page, environment_config, app_config, two_step_property
-        ).enable_two_step_clickwrap_and_super_lease()
+    """One-time admin setup on the module HB admin session."""
+    setup = _lease_setup(
+        hb_admin_session, environment_config, app_config, two_step_property
+    )
+    setup.enable_two_step_clickwrap_and_super_lease()
+    setup.flush_website_cache()
 
 
 @allure.feature("MP Reservation")
@@ -97,16 +96,17 @@ class TestTwoStepLayoutCombinations:
 
     @pytest.fixture(autouse=True)
     def _restore_layout(
-        self, hb_login_page, environment_config, app_config, two_step_property
+        self, hb_admin_session, environment_config, app_config, two_step_property
     ):
         yield
         lease_configuration = _lease_setup(
-            hb_login_page, environment_config, app_config, two_step_property
+            hb_admin_session, environment_config, app_config, two_step_property
         )
         lease_configuration.set_landing_and_value_tier_layouts(
             two_step_property.landing_page_layout,
             two_step_property.value_tier_layout,
         )
+        lease_configuration.flush_website_cache()
 
     @pytest.mark.parametrize("landing_layout,tier_layout", LAYOUT_COMBINATIONS)
     @allure.title(
@@ -117,22 +117,24 @@ class TestTwoStepLayoutCombinations:
         self,
         landing_layout,
         tier_layout,
-        hb_login_page,
+        hb_admin_session,
+        page,
         environment_config,
         app_config,
         two_step_property,
         request,
     ) -> None:
         lease_configuration = _lease_setup(
-            hb_login_page, environment_config, app_config, two_step_property
+            hb_admin_session, environment_config, app_config, two_step_property
         )
         lease_configuration.set_landing_and_value_tier_layouts(
             landing_layout, tier_layout
         )
+        lease_configuration.flush_website_cache()
 
         timeout = app_config.getint("browser", "timeout")
         rental_page = MPUnitSearchPage(
-            hb_login_page.page, environment_config.mp_base_url, timeout
+            page, environment_config.mp_base_url, timeout
         )
         rental_page.open_storefront()
         if two_step_property.mp_state and two_step_property.mp_city:
@@ -186,7 +188,7 @@ class TestTwoStepLayoutCombinations:
         self,
         landing_layout,
         tier_layout,
-        hb_login_page,
+        hb_admin_session,
         mobile_page,
         environment_config,
         app_config,
@@ -195,11 +197,12 @@ class TestTwoStepLayoutCombinations:
         request,
     ) -> None:
         lease_configuration = _lease_setup(
-            hb_login_page, environment_config, app_config, two_step_property
+            hb_admin_session, environment_config, app_config, two_step_property
         )
         lease_configuration.set_landing_and_value_tier_layouts(
             landing_layout, tier_layout
         )
+        lease_configuration.flush_website_cache()
 
         property_url = property_landing_page_url(
             environment_config.mp_base_url,

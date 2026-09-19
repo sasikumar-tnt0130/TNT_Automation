@@ -12,8 +12,8 @@ from common_utils.mp_rental_cases import RentalCase
 # only: that profile has no ACH gateway. One explicit test per scenario, its
 # markers on the test. Each is one real rental, checked on the storefront, in
 # the guest's inbox and in HB - found by its space number - then moved out
-# (common_utils/mp_rental_cases.py); the Two-Step property's signing is only
-# checked, never changed (tests/mp/rentals/conftest.py).
+# (common_utils/mp_rental_cases.py). Module fixture ``two_step_superlease_checked``
+# enables Two-Step + Super Lease + Clickwrap and flushes website cache.
 
 
 @allure.feature("MP Rentals")

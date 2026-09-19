@@ -49,6 +49,7 @@ class HBTenantSpacesPage:
     @log_method_exceptions
     def open_tenants(self, property_name: str) -> None:
         with allure.step(f"Open tenants for {property_name}"):
+            self._ensure_main_shell_for_property_nav()
             self._close_live_agent_notification()
             search_box = self.page.locator("#search-box")
             expect(search_box).to_be_visible(timeout=self.timeout)
@@ -88,6 +89,45 @@ class HBTenantSpacesPage:
                 "xpath=ancestor::*[@role='listitem'][1]"
             ).dispatch_event("click")
             self._close_live_agent_notification()
+
+    def _ensure_main_shell_for_property_nav(self) -> None:
+        """Leave Settings / active dialogs so ``#search-box`` is clickable.
+
+        Shared ``hb_admin_session`` often remains in Settings after signing;
+        ``#search-box`` can still resolve under the overlay and time out on
+        click (live 2026-09-18 legacy_superlease HB validation).
+        """
+        from urllib.parse import urlparse
+
+        dialog = self.page.locator(".v-dialog__content--active").first
+        for _ in range(3):
+            if dialog.count() == 0 or not dialog.is_visible():
+                break
+            self.page.keyboard.press("Escape")
+            try:
+                expect(dialog).to_be_hidden(timeout=waits().short)
+            except AssertionError:
+                close = dialog.locator(
+                    'button[name="QA-v-card-HbIcon-mdi-close"]'
+                )
+                if close.count() > 0 and close.first.is_visible():
+                    close.first.click(force=True)
+        settings_open = False
+        try:
+            settings_open = self.page.get_by_role(
+                "textbox", name="Filter"
+            ).is_visible(timeout=500)
+        except Exception:
+            settings_open = False
+        if settings_open or (
+            dialog.count() > 0 and dialog.is_visible()
+        ):
+            parsed = urlparse(self.page.url or "")
+            if parsed.scheme and parsed.netloc:
+                self.page.goto(
+                    f"{parsed.scheme}://{parsed.netloc}/dashboard",
+                    wait_until="domcontentloaded",
+                )
 
     @log_method_exceptions
     def open_tenant_details(self, first_name: str, last_name: str) -> None:

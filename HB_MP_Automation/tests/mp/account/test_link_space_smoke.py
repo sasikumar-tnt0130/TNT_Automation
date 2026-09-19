@@ -18,6 +18,7 @@ from pages.common.hb_tenant_spaces_page import HBTenantSpacesPage
     "Linking a Unit from HB to Website + Link a Rental Space to Online Bill Pay Account "
     "(Two-Step)"
 )
+@pytest.mark.usefixtures("two_step_superlease_checked")
 def test_link_rented_space_to_online_account(
     page,
     environment_config,
@@ -26,7 +27,7 @@ def test_link_rented_space_to_online_account(
     mp_second_guest,
     two_step_property,
     property_landing_page_url,
-    hb_login_page,
+    hb_admin_session,
     test_data,
 ) -> None:
     # Old Robot suite's 8907 and 8859 (user choice 2026-09-13: two fresh
@@ -55,10 +56,10 @@ def test_link_rented_space_to_online_account(
     assert space_1 != space_2, f"Both rentals got the same space {space_1}"
 
     with allure.step("HB: tenant 2's active gate access code"):
-        if hb_login_page.open_login_page():
-            hb_login_page.submit_login_credentials()
-        hb_login_page.assert_login_successful()
-        tenants = HBTenantSpacesPage(page, app_config.getint("browser", "timeout"))
+        hb_admin_session.ensure_logged_in()
+        tenants = HBTenantSpacesPage(
+            hb_admin_session.page, app_config.getint("browser", "timeout")
+        )
         tenants.open_tenants(two_step_property.hb_property_name)
         access_code = tenants.gate_access_code(
             f"{mp_second_guest['first_name']} {mp_second_guest['last_name']}", space_2

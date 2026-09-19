@@ -11,7 +11,6 @@ from datetime import date
 import allure
 import pytest
 
-from common_utils.browser_sessions import hb_admin_context
 from common_utils.lease_configuration_setup import LeaseConfigurationSetup
 from common_utils.mp_legacy_reservation_setup import MPLegacyReservationSetup
 from common_utils.mp_two_step_reservation_setup import MPTwoStepReservationSetup
@@ -26,29 +25,31 @@ def _advance_days(configured: int | None) -> int:
 
 
 @pytest.fixture(scope="module")
-def _legacy_flow_configured(browser, environment_config, app_config) -> None:
-    with hb_admin_context(browser, environment_config, app_config) as hb_login_page:
-        LeaseConfigurationSetup(
-            hb_login_page, environment_config, app_config
-        ).disable_two_step_clickwrap_and_super_lease()
+def _legacy_flow_configured(hb_admin_session, environment_config, app_config) -> None:
+    setup = LeaseConfigurationSetup(
+        hb_admin_session, environment_config, app_config
+    )
+    setup.disable_two_step_clickwrap_and_super_lease()
+    setup.flush_website_cache()
 
 
 @pytest.fixture(scope="module")
 def _two_step_flow_configured(
-    browser, environment_config, app_config, two_step_property
+    hb_admin_session, environment_config, app_config, two_step_property
 ) -> None:
-    with hb_admin_context(browser, environment_config, app_config) as hb_login_page:
-        LeaseConfigurationSetup(
-            hb_login_page,
-            environment_config,
-            app_config,
-            property_name=two_step_property.lease_configuration_property_name,
-            fms_property_name=two_step_property.fms_property_name,
-        ).enable_two_step_clickwrap_and_super_lease()
+    setup = LeaseConfigurationSetup(
+        hb_admin_session,
+        environment_config,
+        app_config,
+        property_name=two_step_property.lease_configuration_property_name,
+        fms_property_name=two_step_property.fms_property_name,
+    )
+    setup.enable_two_step_clickwrap_and_super_lease()
+    setup.flush_website_cache()
 
 
 def _assert_hb_lead(
-    hb_login_page,
+    hb_admin_session,
     timeout: float,
     hb_property_name: str,
     guest: dict,
@@ -56,10 +57,8 @@ def _assert_hb_lead(
     move_in_date: date,
     business_name: str | None = None,
 ) -> None:
-    if hb_login_page.open_login_page():
-        hb_login_page.submit_login_credentials()
-    hb_login_page.assert_login_successful()
-    leads = HBLeadManagementPage(hb_login_page.page, timeout)
+    hb_admin_session.ensure_logged_in()
+    leads = HBLeadManagementPage(hb_admin_session.page, timeout)
     leads.open_leads(hb_property_name)
     leads.assert_web_reservation_lead(
         guest["email"],
@@ -93,7 +92,7 @@ class TestLegacyAdvanceReservation:
         environment_config,
         app_config,
         mp_guest,
-        hb_login_page,
+        hb_admin_session,
     ) -> None:
         if not (environment_config.mp_city and environment_config.mp_state):
             pytest.skip("No storefront property configured for this environment")
@@ -107,7 +106,7 @@ class TestLegacyAdvanceReservation:
             reservation.assert_confirmation_email(mp_guest, reservation_code)
         with allure.step("HB lead shows the future reservation / move-in date"):
             _assert_hb_lead(
-                hb_login_page,
+                hb_admin_session,
                 app_config.getint("browser", "timeout"),
                 _default_hb_property(app_config, environment, environment_config),
                 mp_guest,
@@ -125,7 +124,7 @@ class TestLegacyAdvanceReservation:
         environment_config,
         app_config,
         mp_guest,
-        hb_login_page,
+        hb_admin_session,
     ) -> None:
         if not (environment_config.mp_city and environment_config.mp_state):
             pytest.skip("No storefront property configured for this environment")
@@ -138,7 +137,7 @@ class TestLegacyAdvanceReservation:
         assert reservation.move_in_date
         reservation.assert_confirmation_email(mp_guest, reservation_code)
         _assert_hb_lead(
-            hb_login_page,
+            hb_admin_session,
             app_config.getint("browser", "timeout"),
             _default_hb_property(app_config, environment, environment_config),
             mp_guest,
@@ -157,7 +156,7 @@ class TestLegacyAdvanceReservation:
         environment_config,
         app_config,
         mp_guest,
-        hb_login_page,
+        hb_admin_session,
     ) -> None:
         """HB-focused check: business name and move-in date on the lead."""
         if not (environment_config.mp_city and environment_config.mp_state):
@@ -170,7 +169,7 @@ class TestLegacyAdvanceReservation:
         )
         assert reservation.move_in_date
         _assert_hb_lead(
-            hb_login_page,
+            hb_admin_session,
             app_config.getint("browser", "timeout"),
             _default_hb_property(app_config, environment, environment_config),
             mp_guest,
@@ -195,7 +194,7 @@ class TestTwoStepAdvanceReservation:
         mp_guest,
         two_step_property,
         property_landing_page_url,
-        hb_login_page,
+        hb_admin_session,
     ) -> None:
         two_step = two_step_property
         property_url = property_landing_page_url(
@@ -221,7 +220,7 @@ class TestTwoStepAdvanceReservation:
             property_name=two_step.lease_configuration_property_name,
         )
         _assert_hb_lead(
-            hb_login_page,
+            hb_admin_session,
             app_config.getint("browser", "timeout"),
             two_step.hb_property_name,
             mp_guest,
@@ -240,7 +239,7 @@ class TestTwoStepAdvanceReservation:
         mp_guest,
         two_step_property,
         property_landing_page_url,
-        hb_login_page,
+        hb_admin_session,
     ) -> None:
         two_step = two_step_property
         property_url = property_landing_page_url(
@@ -266,7 +265,7 @@ class TestTwoStepAdvanceReservation:
             property_name=two_step.lease_configuration_property_name,
         )
         _assert_hb_lead(
-            hb_login_page,
+            hb_admin_session,
             app_config.getint("browser", "timeout"),
             two_step.hb_property_name,
             mp_guest,

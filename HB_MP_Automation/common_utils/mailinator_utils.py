@@ -45,12 +45,22 @@ def _inbox_name(email: str) -> str:
 def _get_json(url: str) -> dict:
     retries, retry_delay = _http_settings()
     last_error: Exception | None = None
+    # Free Mailinator also drops TLS mid-handshake (WinError 10054 /
+    # ConnectionResetError wrapped as ConnectionError) — same as the bare
+    # 500s already retried here (confirmed 2026-09-18 on ACH mobile clickwrap).
+    transient = (
+        requests.HTTPError,
+        requests.exceptions.JSONDecodeError,
+        requests.exceptions.ConnectionError,
+        requests.exceptions.Timeout,
+        requests.exceptions.ChunkedEncodingError,
+    )
     for _ in range(retries):
         try:
             response = requests.get(url, timeout=15)
             response.raise_for_status()
             return response.json()
-        except (requests.HTTPError, requests.exceptions.JSONDecodeError) as error:
+        except transient as error:
             last_error = error
             time.sleep(retry_delay)
     raise RuntimeError(f"Mailinator API request failed after retries: {url}") from last_error
@@ -168,14 +178,28 @@ def get_email_text(message: dict) -> str:
 
 
 def get_email_plain_text(message: dict) -> str:
-    """get_email_text with styles/tags stripped, HTML entities decoded and
-    whitespace collapsed - for phrase and amount assertions against HTML
-    emails (e.g. "5&#39; x 5&#39;", "$&nbsp;112.40")."""
+    """get_email_text with styles/tags stripped, HTML entities decoded.
+
+    Block tags become newlines so Account Summary charge rows stay one
+    label+$amount per line (needed for three-way cost parse). Inline
+    whitespace is still collapsed.
+    """
     text = re.sub(
-        r"<(style|script)\b.*?</\1>", " ", get_email_text(message), flags=re.IGNORECASE | re.DOTALL
+        r"<(style|script)\b.*?</\1>",
+        " ",
+        get_email_text(message),
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    # Keep row structure from HTML emails (Rental Confirmation Account Summary).
+    text = re.sub(
+        r"<(?:br|/p|/div|/tr|/li|/h\d)\b[^>]*>",
+        "\n",
+        text,
+        flags=re.IGNORECASE,
     )
     text = html.unescape(re.sub(r"<[^>]+>", " ", text))
-    return re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"[^\S\n]+", " ", text)
+    return re.sub(r"\n+", "\n", text).strip()
 
 
 def find_email_link(message: dict, link_text: str) -> str:

@@ -222,7 +222,11 @@ class MPTwoStepReservationSetup:
 
     @log_method_exceptions
     def rent_reserved_unit(
-        self, guest: dict, rental_data: dict, payment_method: str = "card"
+        self,
+        guest: dict,
+        rental_data: dict,
+        payment_method: str = "card",
+        card: dict | None = None,
     ) -> dict:
         """Old Robot suite's 8872 "Rent Storage w/ enrolling for auto-debit",
         Two-Step version (confirmed live 2026-09-13, uat_storoutlet/Chula
@@ -259,10 +263,11 @@ class MPTwoStepReservationSetup:
                 enroll_autopay=enroll_autopay,
             )
         else:
+            card = card or {}
             self.two_step_page.pay_rental_by_card(
-                card_number=self.environment_config.card_number,
-                card_expiry=self.environment_config.card_expiry,
-                card_cvc=self.environment_config.card_cvc,
+                card_number=card.get("card_number") or self.environment_config.card_number,
+                card_expiry=card.get("card_expiry") or self.environment_config.card_expiry,
+                card_cvc=card.get("card_cvc") or self.environment_config.card_cvc,
                 name_on_card=payer_name,
                 zip_code=self.environment_config.card_zip_code,
                 enroll_autopay=enroll_autopay,
@@ -270,6 +275,14 @@ class MPTwoStepReservationSetup:
             )
         space_number = lease_summary["space_number"]
         self.two_step_page.assert_rental_complete(space_number)
+        from common_utils.mp_lease_costs import read_confirmation_page_costs
+
+        confirmation_costs = read_confirmation_page_costs(self.two_step_page.page)
+        lease_summary = {
+            **lease_summary,
+            "confirmation_charges": confirmation_costs["charges"],
+            "confirmation_total": confirmation_costs["total"],
+        }
         save_confirmation_screenshot(
             self.two_step_page.page,
             self.confirmation_dir / f"rental-{space_number}.png",
@@ -298,7 +311,8 @@ class MPTwoStepReservationSetup:
         amount_paid: float,
         security_deposit: float | None,
         autopay: bool = True,
-    ) -> None:
+        charges: dict[str, float] | None = None,
+    ) -> str:
         """Old Robot suite's 10604 ("Validate Tenant email for Rental") and
         10633 (its Move-In Date is the lease date). Confirmed live
         (2026-09-13): the rental sends "<property> Rental Confirmation" -
@@ -308,8 +322,10 @@ class MPTwoStepReservationSetup:
         Move-In $ 112.40"; with autopay, "<property> Auto Payment
         Confirmation" arrives too. Two-Step sends a second Rental
         Confirmation after Get Access - get_access_baseline tells the two
-        apart (see mp_rental_emails)."""
-        assert_rental_confirmation_emails(
+        apart (see mp_rental_emails). Pass ``charges`` from the Lease
+        Summary / confirmation page to assert each cost line item.
+        Returns the confirmation email plain text."""
+        return assert_rental_confirmation_emails(
             self.two_step_page.page.context,
             self.confirmation_dir,
             guest,
@@ -319,4 +335,5 @@ class MPTwoStepReservationSetup:
             security_deposit,
             autopay,
             get_access_baseline=self.get_access_baseline,
+            charges=charges,
         )

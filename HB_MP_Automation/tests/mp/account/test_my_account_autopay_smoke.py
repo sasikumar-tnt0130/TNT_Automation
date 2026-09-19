@@ -1,4 +1,5 @@
 import allure
+import pytest
 
 from common_utils.mp_my_account_setup import MPMyAccountSetup
 from common_utils.mp_two_step_reservation_setup import MPTwoStepReservationSetup
@@ -14,6 +15,7 @@ from pages.common.hb_tenant_spaces_page import HBTenantSpacesPage
     "Complete Pay Bill + Enroll in Autopay + Cancel Autopay + Autopay emails from "
     "My Account (Two-Step)"
 )
+@pytest.mark.usefixtures("two_step_superlease_checked")
 def test_my_account_pay_bill_and_autopay(
     page,
     environment_config,
@@ -21,7 +23,7 @@ def test_my_account_pay_bill_and_autopay(
     mp_guest,
     two_step_property,
     property_landing_page_url,
-    hb_login_page,
+    hb_admin_session,
     test_data,
 ) -> None:
     # Old Robot suite's 8860, 8861, 8862 and 10605, on a tenant rented in
@@ -86,10 +88,10 @@ def test_my_account_pay_bill_and_autopay(
         account.assert_autopay_enrollment_email(mp_guest, inbox_baseline)
 
     with allure.step("HB: prepaid balance and autopay cancel/re-enrol notes"):
-        if hb_login_page.open_login_page():
-            hb_login_page.submit_login_credentials()
-        hb_login_page.assert_login_successful()
-        tenants = HBTenantSpacesPage(page, app_config.getint("browser", "timeout"))
+        hb_admin_session.ensure_logged_in()
+        tenants = HBTenantSpacesPage(
+            hb_admin_session.page, app_config.getint("browser", "timeout")
+        )
         tenants.open_tenants(two_step_property.hb_property_name)
         tenants.assert_autopay_cancelled_and_reenrolled(
             guest_name,

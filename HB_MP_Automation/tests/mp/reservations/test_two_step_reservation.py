@@ -7,19 +7,18 @@ from common_utils.mp_two_step_reservation_setup import MPTwoStepReservationSetup
 
 @pytest.fixture(scope="class")
 def _two_step_flow_configured(
-    browser, environment_config, app_config, two_step_property
+    hb_admin_session, environment_config, app_config, two_step_property
 ) -> None:
-    """One-time admin setup on a temporary HB context (one Chromium context)."""
-    from common_utils.browser_sessions import hb_admin_context
-
-    with hb_admin_context(browser, environment_config, app_config) as hb_login_page:
-        LeaseConfigurationSetup(
-            hb_login_page,
-            environment_config,
-            app_config,
-            property_name=two_step_property.lease_configuration_property_name,
-            fms_property_name=two_step_property.fms_property_name,
-        ).enable_two_step_clickwrap_and_super_lease()
+    """One-time admin setup on the module HB admin session."""
+    setup = LeaseConfigurationSetup(
+        hb_admin_session,
+        environment_config,
+        app_config,
+        property_name=two_step_property.lease_configuration_property_name,
+        fms_property_name=two_step_property.fms_property_name,
+    )
+    setup.enable_two_step_clickwrap_and_super_lease()
+    setup.flush_website_cache()
 
 
 @allure.feature("MP Reservation")

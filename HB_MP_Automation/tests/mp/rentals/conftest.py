@@ -35,11 +35,12 @@ from common_utils.browser_sessions import (
     desktop_context_options,
     prepare_desktop_page,
 )
-from common_utils.lease_configuration_setup import LeaseConfigurationSetup
 from common_utils.mp_rental_cases import run_rental_case
 from config.config_reader import load_gateways, load_property
+from pages.common.hb_login_page import HBLoginPage
 from pages.common.hb_payment_processing_page import HBPaymentProcessingPage
 from pages.common.hb_settings_navigation import HBSettingsNavigation
+from pages.hummingbird.hb_quick_launch_page import HBQuickLaunchPage
 
 _log = logging.getLogger("hb_mp.rentals")
 
@@ -65,71 +66,141 @@ ensure_property_advanced_reservations = _helpers.ensure_property_advanced_reserv
 
 @pytest.fixture(scope="module", autouse=True)
 def disable_property_advanced_reservations(
-    browser, environment_config, app_config
+    hb_admin_session, environment_config, app_config
 ) -> None:
     """Set APW Advanced Reservations from per-property config/properties/<env>.ini.
 
     Requires apw_advance_reservation_enable = true | false and
     lease_configuration_property_name (facility contains-match, same as
-    Lease Configuration property selection).
+    Lease Configuration property selection). Reuses module ``hb_admin_session``.
     """
     ensure_property_advanced_reservations(
-        browser, environment_config, app_config
+        hb_admin_session, environment_config, app_config
     )
 
 
 # --- Legacy / Two-Step signing (module scope) ---------------------------------
 
 
-@pytest.fixture(scope="module")
-def legacy_traditional_signing(browser, environment_config, app_config) -> None:
-    """Traditional signing: Clickwrap off, Super Lease off."""
-    with legacy_signing_setup(browser, environment_config, app_config) as signing:
-        signing.disable_clickwrap_and_super_lease()
-
-
-@pytest.fixture(scope="module")
-def legacy_clickwrap_signing(browser, environment_config, app_config) -> None:
-    """Clickwrap signing: Clickwrap on, Super Lease off."""
-    with legacy_signing_setup(browser, environment_config, app_config) as signing:
-        signing.enable_clickwrap_with_super_lease_disabled()
-
-
-@pytest.fixture(scope="module")
-def legacy_superlease_signing(browser, environment_config, app_config) -> None:
-    """Super Lease signing: Clickwrap on, Super Lease on."""
-    with legacy_signing_setup(browser, environment_config, app_config) as signing:
-        signing.enable_super_lease_and_clickwrap()
-
-
-@pytest.fixture(scope="module")
-def two_step_superlease_checked(
-    browser, environment_config, app_config, two_step_property
+def _verify_legacy_storefront_flow(
+    signing,
+    *,
+    browser,
+    app_config,
+    environment_config,
+    property_landing_page_url,
 ) -> None:
-    """Read-only: Two-Step property must already have Clickwrap + Super Lease on.
+    """Confirm Mariposa serves Legacy Reserve This Space after configure+flush.
 
-    Settings are checked, never changed. Storefront flow is verified by
-    MPTwoStepReservationSetup.reserve_unit instead.
+    Admin Two-Step-off alone has been wrong while the storefront kept
+    Reserve Now (stage/Garden Grove, 2026-09-19).
+
+    Uses a tab on the existing HB admin context and discovers the landing
+    URL on that same tab — never opens the session property-discovery
+    Chromium window (that was the persistent third window).
     """
-    from common_utils.browser_sessions import hb_admin_context
+    del browser  # same Browser as hb_admin_session; keep call-site signature
+    from pages.mariposa.mp_unit_search_page import MPUnitSearchPage
 
-    with hb_admin_context(browser, environment_config, app_config) as hb_login_page:
-        signing = LeaseConfigurationSetup(
-            hb_login_page,
-            environment_config,
-            app_config,
-            property_name=two_step_property.lease_configuration_property_name,
-            fms_property_name=two_step_property.fms_property_name,
+    prop = environment_config.legacy_property
+    if not prop or not (prop.mp_state and prop.mp_city):
+        return
+    timeout = app_config.getint("browser", "timeout")
+    store_page = signing.hb_login_page.page.context.new_page()
+    try:
+        store_page.set_default_timeout(timeout)
+        # Resolve + verify on this tab only (page= avoids discovery_context).
+        property_url = property_landing_page_url(
+            environment_config.mp_base_url,
+            prop.mp_state,
+            prop.mp_city,
+            page=store_page,
         )
-        signing.open_state_compliance_tools()
-        clickwrap = signing.lease_configuration.is_clickwrap_signature_enabled()
-        super_lease = signing.lease_configuration.is_super_lease_enabled()
-    if not (clickwrap and super_lease):
-        pytest.fail(
-            f"{two_step_property.lease_configuration_property_name} isn't on "
-            f"Super Lease signing (Clickwrap {clickwrap}, Super Lease "
-            f"{super_lease}) - its settings are only checked here, not changed"
+        rental_page = MPUnitSearchPage(store_page, environment_config, timeout)
+        signing.two_step_rental_page.verify_two_step_on_storefront(
+            signing.fms_property_name,
+            False,
+            rental_page,
+            property_url=property_url,
         )
+    finally:
+        try:
+            store_page.close()
+        except Exception:
+            pass
+
+
+@pytest.fixture(scope="module")
+def legacy_traditional_signing(
+    hb_admin_session,
+    environment_config,
+    app_config,
+    browser,
+    property_landing_page_url,
+) -> None:
+    """Traditional signing: Clickwrap off, Super Lease off, Two-Step off."""
+    with legacy_signing_setup(
+        hb_admin_session, environment_config, app_config
+    ) as signing:
+        signing.disable_clickwrap_and_super_lease()
+        signing.flush_website_cache()
+        _verify_legacy_storefront_flow(
+            signing,
+            browser=browser,
+            app_config=app_config,
+            environment_config=environment_config,
+            property_landing_page_url=property_landing_page_url,
+        )
+
+
+@pytest.fixture(scope="module")
+def legacy_clickwrap_signing(
+    hb_admin_session,
+    environment_config,
+    app_config,
+    browser,
+    property_landing_page_url,
+) -> None:
+    """Clickwrap signing: Clickwrap on, Super Lease off, Two-Step off."""
+    with legacy_signing_setup(
+        hb_admin_session, environment_config, app_config
+    ) as signing:
+        signing.enable_clickwrap_with_super_lease_disabled()
+        signing.flush_website_cache()
+        _verify_legacy_storefront_flow(
+            signing,
+            browser=browser,
+            app_config=app_config,
+            environment_config=environment_config,
+            property_landing_page_url=property_landing_page_url,
+        )
+
+
+@pytest.fixture(scope="module")
+def legacy_superlease_signing(
+    hb_admin_session,
+    environment_config,
+    app_config,
+    browser,
+    property_landing_page_url,
+) -> None:
+    """Super Lease signing: Clickwrap on, Super Lease on, Two-Step off."""
+    with legacy_signing_setup(
+        hb_admin_session, environment_config, app_config
+    ) as signing:
+        signing.enable_super_lease_and_clickwrap()
+        signing.flush_website_cache()
+        _verify_legacy_storefront_flow(
+            signing,
+            browser=browser,
+            app_config=app_config,
+            environment_config=environment_config,
+            property_landing_page_url=property_landing_page_url,
+        )
+
+
+# two_step_superlease_checked / ensure_two_step_superlease live in
+# tests/mp/conftest.py so reservations + account suites can use them too.
 
 
 # --- Payment gateway profile + ensure ----------------------------------------
@@ -164,60 +235,80 @@ def payment_gateways(browser, environment, environment_config, app_config):
         nonlocal context, payments, batch_page, batch_payments
         key = (property_key, method)
         if key not in results or results[key][0] != profile:
-            try:
-                outcomes: dict[str, str] = {}
-                gateways = [
-                    gateway
-                    for gateway in load_gateways(app_config, profile)
-                    if gateway.method == method
-                ]
-                if gateways:
-                    if page is not None:
-                        if batch_page is not page:
-                            log_in(page, environment_config, timeout)
-                            batch_payments = HBPaymentProcessingPage(
-                                page, timeout, HBSettingsNavigation(page, timeout)
+            outcomes: dict[str, str] = {}
+            gateways = [
+                gateway
+                for gateway in load_gateways(app_config, profile)
+                if gateway.method == method
+            ]
+            if gateways:
+                rental_property = load_property(
+                    app_config, environment, property_key
+                )
+                dashboard_name = (
+                    rental_property.hb_property_name
+                    or rental_property.lease_configuration_property_name
+                )
+                settings_name = (
+                    rental_property.lease_configuration_property_name
+                    or rental_property.hb_property_name
+                )
+                if page is not None:
+                    if batch_page is not page:
+                        log_in(page, environment_config, timeout)
+                        batch_payments = HBPaymentProcessingPage(
+                            page, timeout, HBSettingsNavigation(page, timeout)
+                        )
+                        batch_page = page
+                    assert batch_payments is not None
+                    # Stage Hamilton vs Rutland: Payment Processing Select
+                    # Property only lists facilities for the dashboard
+                    # property (live 2026-09-19).
+                    if dashboard_name:
+                        HBLoginPage(
+                            page, environment_config, timeout
+                        ).ensure_on_dashboard()
+                        HBQuickLaunchPage(page, timeout).select_property(
+                            dashboard_name
+                        )
+                    # Prior HB validation uses ensure_on_dashboard and leaves
+                    # Settings closed; reuse must reopen Payment Processing
+                    # before Select Property (live 2026-09-18 clickwrap ACH).
+                    select = page.get_by_role(
+                        "textbox", name="Select Property", exact=True
+                    )
+                    try:
+                        settings_ready = select.is_visible(timeout=500)
+                    except Exception:
+                        settings_ready = False
+                    if not settings_ready:
+                        batch_payments.open_payment_processing()
+                    batch_payments.select_property(settings_name)
+                    outcomes = batch_payments.ensure_gateways(gateways)
+                else:
+                    if payments is None:
+                        context = browser.new_context(
+                            **desktop_context_options(
+                                app_config, record_video=False
                             )
-                            batch_payments.open_payment_processing()
-                            batch_page = page
-                        assert batch_payments is not None
-                        rental_property = load_property(
-                            app_config, environment, property_key
                         )
-                        batch_payments.select_property(
-                            rental_property.lease_configuration_property_name
-                            or rental_property.hb_property_name
+                        owned = context.new_page()
+                        prepare_desktop_page(owned, app_config, record_artifacts=False)
+                        log_in(owned, environment_config, timeout)
+                        payments = HBPaymentProcessingPage(
+                            owned, timeout, HBSettingsNavigation(owned, timeout)
                         )
-                        outcomes = batch_payments.ensure_gateways(gateways)
-                    else:
-                        if payments is None:
-                            context = browser.new_context(
-                                **desktop_context_options(
-                                    app_config, record_video=False
-                                )
-                            )
-                            owned = context.new_page()
-                            prepare_desktop_page(owned, app_config, record_artifacts=False)
-                            log_in(owned, environment_config, timeout)
-                            payments = HBPaymentProcessingPage(
-                                owned, timeout, HBSettingsNavigation(owned, timeout)
-                            )
-                            payments.open_payment_processing()
-                        rental_property = load_property(
-                            app_config, environment, property_key
-                        )
-                        payments.select_property(
-                            rental_property.lease_configuration_property_name
-                            or rental_property.hb_property_name
-                        )
-                        outcomes = payments.ensure_gateways(gateways)
-                results[key] = (profile, outcomes)
-            except Exception as error:
-                results[key] = (profile, error)
-        outcome = results[key][1]
-        if isinstance(outcome, Exception):
-            raise outcome
-        return outcome
+                    if dashboard_name:
+                        HBQuickLaunchPage(
+                            payments.page, timeout
+                        ).select_property(dashboard_name)
+                    payments.open_payment_processing()
+                    payments.select_property(settings_name)
+                    outcomes = payments.ensure_gateways(gateways)
+            # Cache successes only — a failed ensure must not poison the
+            # rest of the session (pytest reruns / later methods).
+            results[key] = (profile, outcomes)
+        return results[key][1]
 
     yield ensure
     if context is not None:
@@ -232,8 +323,7 @@ def payment_gateways(browser, environment, environment_config, app_config):
 @pytest.fixture
 def rental_case_runner(
     request,
-    page,
-    hb_login_page,
+    hb_admin_session,
     environment,
     environment_config,
     app_config,
@@ -243,9 +333,14 @@ def rental_case_runner(
     payment_gateways,
     gateway_profile,
 ):
-    """run(case, two_step=False) on Legacy or Two-Step property from config."""
+    """run(case, two_step=False) on Legacy or Two-Step property from config.
 
-    def run(case, two_step: bool = False) -> None:
+    Desktop: one browser tab for HB setup → storefront → HB validation
+    (URL switching on ``hb_admin_session.page``) so Allure gets a single
+    execution-video with no ffmpeg merge. Mobile still uses ``mobile_page``.
+    """
+
+    def run(case, two_step: bool = False, card: dict | None = None) -> None:
         missing = sorted(
             marker
             for marker in case.markers
@@ -263,28 +358,47 @@ def rental_case_runner(
                 f"No {setting} configured for {environment} in config/properties/"
             )
         property_config = load_property(app_config, environment, property_key)
+        # One tab for desktop rentals (HB + Mariposa). Mobile keeps its own
+        # phone viewport page.
+        if case.view == "mobile":
+            storefront_page = request.getfixturevalue("mobile_page")
+        else:
+            storefront_page = hb_admin_session.page
         if gateway_profile:
             _log.info(
-                "Payment gateways on shared test page (no extra Chromium context)"
+                "Payment gateways on shared HB/storefront tab "
+                "(single browser window)"
             )
+            # Only the property this case rents — stage Payment Processing
+            # for Hamilton does not list Lightning Storage (2026-09-19).
+            try:
+                payment_gateways(
+                    property_key,
+                    gateway_profile,
+                    "ACH" if case.payment == "ach" else "Credit Cards",
+                    page=hb_admin_session.page,
+                )
+            except Exception:
+                raise
+            # Soft-ensure sibling rental properties when they share a company.
             for key in rental_property_keys(app_config, environment):
+                if key == property_key:
+                    continue
                 try:
                     payment_gateways(
                         key,
                         gateway_profile,
                         "ACH" if case.payment == "ach" else "Credit Cards",
-                        page=hb_login_page.page,
+                        page=hb_admin_session.page,
                     )
                 except Exception as error:
-                    if key == property_key:
-                        raise
                     allure.attach(
                         repr(error)[:1000],
                         name=f"payment gateways not ready on {key}",
                         attachment_type=allure.attachment_type.TEXT,
                     )
         _log.info(
-            "Property landing discovery on shared test page for %s / %s",
+            "Property landing discovery on shared tab for %s / %s",
             property_config.mp_state,
             property_config.mp_city,
         )
@@ -292,12 +406,7 @@ def rental_case_runner(
             environment_config.mp_base_url,
             property_config.mp_state,
             property_config.mp_city,
-            page=page,
-        )
-        storefront_page = (
-            request.getfixturevalue("mobile_page")
-            if case.view == "mobile"
-            else page
+            page=storefront_page,
         )
         rental_data = test_data("mp_rental")
         if gateway_profile:
@@ -314,7 +423,7 @@ def rental_case_runner(
             case=case,
             two_step=two_step,
             storefront_page=storefront_page,
-            hb_login_page=hb_login_page,
+            hb_login_page=hb_admin_session,
             environment_config=environment_config,
             app_config=app_config,
             property_config=property_config,
@@ -326,6 +435,7 @@ def rental_case_runner(
             # tenant_payments_gateway / non_tenant_payments_gateway: do not
             # burn time on HB tenant checks when MP confirmation already failed.
             skip_hb_on_confirmation_failure=bool(gateway_profile),
+            card=card,
         )
 
     return run

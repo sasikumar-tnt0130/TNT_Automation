@@ -119,9 +119,7 @@ def _run_extras_rental(
             space_number = rental["space_number"]
 
         with allure.step("HB: generated documents for the extras"):
-            if hb_login_page.open_login_page():
-                hb_login_page.submit_login_credentials()
-            hb_login_page.assert_login_successful()
+            hb_login_page.ensure_logged_in()
             tenants = HBTenantSpacesPage(hb_login_page.page, timeout)
             tenants.open_tenants(prop.hb_property_name)
             tenants.open_storefront_tenant(guest_name, space_number)
@@ -176,7 +174,7 @@ class TestRentalExtras:
         app_config,
         mp_guest,
         property_landing_page_url,
-        hb_login_page,
+        hb_admin_session,
         test_data,
         move_out_after_rental,
     ) -> None:
@@ -191,7 +189,7 @@ class TestRentalExtras:
             app_config=app_config,
             mp_guest=mp_guest,
             property_landing_page_url=property_landing_page_url,
-            hb_login_page=hb_login_page,
+            hb_login_page=hb_admin_session,
             test_data=test_data,
             move_out_after_rental=move_out_after_rental,
             unit_type=None,
@@ -217,7 +215,7 @@ class TestRentalExtras:
         app_config,
         mp_guest,
         property_landing_page_url,
-        hb_login_page,
+        hb_admin_session,
         test_data,
         move_out_after_rental,
     ) -> None:
@@ -230,7 +228,7 @@ class TestRentalExtras:
             app_config=app_config,
             mp_guest=mp_guest,
             property_landing_page_url=property_landing_page_url,
-            hb_login_page=hb_login_page,
+            hb_login_page=hb_admin_session,
             test_data=test_data,
             move_out_after_rental=move_out_after_rental,
             unit_type="Parking",

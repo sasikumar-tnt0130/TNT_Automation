@@ -72,8 +72,11 @@ def _attach_payment_section(page: Page) -> None:
         text[start:start + 800] if start >= 0 else text[:800],
         name="payment section", attachment_type=allure.attachment_type.TEXT,
     )
+    # Viewport only — full-page PNG bloated Allure on long rental forms.
     allure.attach(
-        page.screenshot(full_page=True), name="rental form", attachment_type=allure.attachment_type.PNG
+        page.screenshot(full_page=False),
+        name="rental form",
+        attachment_type=allure.attachment_type.PNG,
     )
 
 
@@ -272,24 +275,136 @@ def select_payment_method(page: Page, timeout: float, method: str) -> None:
     expect(radio.first).to_be_checked(timeout=timeout)
 
 
+def card_pan_digits(card_number: str) -> str:
+    return re.sub(r"\D", "", card_number or "")
+
+
+def card_brand(card_number: str) -> str:
+    """Rough brand from PAN prefix — drives CVV length (Amex=4, else 3)."""
+    digits = card_pan_digits(card_number)
+    if digits.startswith(("34", "37")):
+        return "amex"
+    if digits.startswith("4"):
+        return "visa"
+    if digits.startswith(("51", "52", "53", "54", "55")) or (
+        len(digits) >= 4 and 2221 <= int(digits[:4]) <= 2720
+    ):
+        return "mastercard"
+    if digits.startswith(("6011", "65")):
+        return "discover"
+    if digits.startswith(("62", "81")):
+        return "unionpay"
+    return "unknown"
+
+
+def expected_cvv_length(card_number: str) -> int:
+    """Hosted CVV length follows the card: Amex 4, others 3 (MRECOM hosted fields)."""
+    return 4 if card_brand(card_number) == "amex" else 3
+
+
+def normalize_expiry_digits(card_expiry: str) -> str:
+    """Hosted expiry accepts MMYY (2-digit year) or MMYYYY (full year).
+
+    Previously only the last two year digits were typed; the field now also
+    accepts a four-digit year. Returns digits only for press_sequentially.
+    """
+    digits = re.sub(r"\D", "", card_expiry or "")
+    if len(digits) in (4, 6):
+        return digits
+    raise ValueError(
+        f"card_expiry must be MM/YY, MM/YYYY, MMYY, or MMYYYY; got {card_expiry!r}"
+    )
+
+
+def hosted_card_input(page: Page, frame_name: str):
+    """Input inside a Global Payments hosted iframe (card-number / expiration / cvv)."""
+    return page.frame_locator(f'iframe[name="{frame_name}"]').locator("input").first
+
+
+def card_ui_input(page: Page, field: str):
+    """Hosted iframe input when present, else native Mariposa/Authorize.Net field.
+
+    ``field`` is card-number | card-expiration | card-cvv.
+    """
+    hosted = page.locator(f'iframe[name="{field}"]')
+    if hosted.count() > 0 and hosted.first.is_visible():
+        return hosted_card_input(page, field)
+    plain = {
+        "card-number": page.locator("#creditCardNumber"),
+        "card-expiration": page.locator("#expiry"),
+        "card-cvv": page.locator("#cvv"),
+    }[field]
+    return plain.first
+
+
 def enter_card(
     page: Page, timeout: float, card_number: str, card_expiry: str, card_cvc: str, name_on_card: str
 ) -> None:
+    """Fill card fields. Hosted iframes accept PAN up to 19 digits, expiry as
+    MMYY or MMYYYY, and CVV of 3 or 4 digits based on the card brand."""
+    pan = card_pan_digits(card_number)
+    if not (13 <= len(pan) <= 19):
+        raise ValueError(
+            f"card_number must be 13–19 digits for hosted payments; got {len(pan)}"
+        )
+    expiry_digits = normalize_expiry_digits(card_expiry)
+    cvv = re.sub(r"\D", "", card_cvc or "")
+    want_cvv = expected_cvv_length(pan)
+    if len(cvv) != want_cvv:
+        raise ValueError(
+            f"CVV for {card_brand(pan)} must be {want_cvv} digits; got {len(cvv)} ({cvv!r})"
+        )
+
     hosted_number = page.locator('iframe[name="card-number"]')
     plain_number = page.locator("#creditCardNumber")
     expect(hosted_number.or_(plain_number).first).to_be_visible(timeout=timeout)
     if hosted_number.count() > 0:
         card_fields = [
-            page.frame_locator(f'iframe[name="{frame_name}"]').locator("input").first
+            hosted_card_input(page, frame_name)
             for frame_name in ("card-number", "card-expiration", "card-cvv")
         ]
     else:
         card_fields = [plain_number, page.locator("#expiry"), page.locator("#cvv")]
-    # The hosted expiry reformats typed digits ("1234" becomes "12 / 2034").
-    for card_field, value in zip(card_fields, (card_number, re.sub(r"\D", "", card_expiry), card_cvc)):
+    # Expiry: MMYY ("1234" → "12 / 2034") or MMYYYY full year ("122034").
+    for card_field, value in zip(card_fields, (pan, expiry_digits, cvv)):
         card_field.click()
+        card_field.fill("")
         card_field.press_sequentially(value, delay=40)
     page.locator("#name").fill(name_on_card)
+
+
+def assert_card_fields_ready(page: Page, timeout: float) -> None:
+    """Credit Card section shows card number / expiry / CVV (hosted or plain)."""
+    with allure.step("Assert card entry fields are on the rental form"):
+        select_payment_method(page, timeout, "card")
+        for field in ("card-number", "card-expiration", "card-cvv"):
+            expect(card_ui_input(page, field)).to_be_visible(timeout=timeout)
+
+
+# Back-compat name used by older callers.
+assert_card_fields_are_hosted = assert_card_fields_ready
+
+
+def assert_card_ui_field_accepts_digits(
+    page: Page, timeout: float, field: str, digits: str
+) -> None:
+    """Type digits into the card UI field and assert they are kept (UI only)."""
+    control = card_ui_input(page, field)
+    expect(control).to_be_visible(timeout=timeout)
+    control.click()
+    control.fill("")
+    control.press_sequentially(digits, delay=30)
+    value = control.input_value()
+    got = re.sub(r"\D", "", value or "")
+    assert len(got) >= len(digits), (
+        f"Card UI {field} truncated input: typed {len(digits)} digits "
+        f"({digits!r}), field shows {value!r} ({len(got)} digits)"
+    )
+    allure.attach(
+        f"typed={digits!r} value={value!r} digits={got!r}",
+        name=f"card-ui-{field}",
+        attachment_type=allure.attachment_type.TEXT,
+    )
 
 
 def enter_ach(
