@@ -105,11 +105,15 @@ def _list_option(section, key: str) -> list[str]:
 def list_properties(config: ConfigParser, environment: str) -> list[str]:
     """Every property key this environment declares (its own
     `[environment.key]` subsections), from the environment section's own
-    `properties` list."""
+    `properties` list.
+
+    Dedupes so ``properties = Bellflower, Bellflower`` (same key used for
+    both ``legacy_property`` and ``two_step_property``) only appears once.
+    """
     environment = environment.strip()
     if not config.has_section(environment):
         return []
-    return _list_option(config[environment], "properties")
+    return list(dict.fromkeys(_list_option(config[environment], "properties")))
 
 
 def load_property(

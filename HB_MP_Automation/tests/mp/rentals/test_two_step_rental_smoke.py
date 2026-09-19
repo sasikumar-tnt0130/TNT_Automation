@@ -18,6 +18,7 @@ from pages.common.hb_tenant_spaces_page import HBTenantSpacesPage
 )
 @pytest.mark.smoke
 @pytest.mark.testrail("C683630")
+@pytest.mark.usefixtures("two_step_superlease_checked")
 def test_rent_reserved_unit_with_autopay(
     page,
     environment_config,
@@ -25,7 +26,7 @@ def test_rent_reserved_unit_with_autopay(
     mp_guest,
     two_step_property,
     property_landing_page_url,
-    hb_login_page,
+    hb_admin_session,
     test_data,
 ) -> None:
     # Old Robot suite's 8872, 8885, 10604 and 10633 on one storefront rental
@@ -72,10 +73,10 @@ def test_rent_reserved_unit_with_autopay(
         )
 
     with allure.step("8885: the rental shows in HB as a current tenant with autopay"):
-        if hb_login_page.open_login_page():
-            hb_login_page.submit_login_credentials()
-        hb_login_page.assert_login_successful()
-        tenants = HBTenantSpacesPage(page, app_config.getint("browser", "timeout"))
+        hb_admin_session.ensure_logged_in()
+        tenants = HBTenantSpacesPage(
+            hb_admin_session.page, app_config.getint("browser", "timeout")
+        )
         tenants.open_tenants(two_step_property.hb_property_name)
         tenants.assert_web_rental_tenant(
             guest_name,

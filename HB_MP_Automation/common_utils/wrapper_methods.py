@@ -65,22 +65,19 @@ def save_email_screenshot(
 ) -> None:
     """Renders a Mailinator email's HTML body and screenshots it.
 
-    Uses a throwaway context with no video recording so the tab does not
-    split the test's single Playwright execution video (Playwright writes
-    one .webm per page in a recording context).
+    Uses a temporary tab on the caller's context (same Chromium window) so
+    headed runs do not open a third browser window for each email shot.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    browser = context.browser
-    scratch = browser.new_context() if browser is not None else None
-    email_page = scratch.new_page() if scratch is not None else context.new_page()
+    email_page = context.new_page()
     try:
         email_page.set_content(html, wait_until="load")
         email_page.screenshot(path=str(path), full_page=True)
     finally:
-        if scratch is not None:
-            scratch.close()
-        else:
+        try:
             email_page.close()
+        except Exception:
+            pass
     allure.attach(
         path.read_bytes(), name=allure_name, attachment_type=allure.attachment_type.PNG
     )

@@ -3,12 +3,28 @@ import re
 import allure
 from playwright.sync_api import Page, expect
 
+from common_utils.waits import waits
 from common_utils.wrapper_methods import log_method_exceptions
 from pages.common.hb_settings_navigation import HBSettingsNavigation
 
 
 class HBLeaseConfigurationPage:
-    """Lease Configuration & State Compliance (Super Lease, Clickwrap Signature), under HB's Hummingbird app."""
+    """Lease Configuration & State Compliance (Super Lease, Clickwrap Signature).
+
+    Live 2026-09-18 (stage / Hamilton Self Storage):
+    - Toggling Super Lease / Clickwrap opens a confirmation modal
+      (``.hb-modal-confirmation-border``) with Activate or Disable.
+    - Playwright clicks on those HbBottomActionBar buttons do not run the
+      Vue handler; the wrapper's ``buttonClicked`` method does (and POSTs
+      ``/settings/lease-settings``).
+    - After a successful confirm the modal often stays open — dismiss with
+      Escape / close icon. Success is the switch state, not the button hiding.
+    """
+
+    _CONFIRM_MODAL = ".hb-modal-confirmation-border"
+    _SUPER_LEASE_SWITCH = re.compile(r"^Super Lease")
+    _CLICKWRAP_SWITCH = re.compile(r"^Clickwrap Signature")
+    _SUPER_LEASE_SECTION = re.compile(r"Super Lease.*Property")
 
     @log_method_exceptions
     def __init__(
@@ -47,62 +63,113 @@ class HBLeaseConfigurationPage:
     def open_super_lease(self) -> None:
         with allure.step("Open Super Lease"):
             self.open_lease_configuration()
-            # Confirmed live 2026-09-08: NOT self.nav.property_name - that
-            # field is shared with MPFMSInitialSetupPage (both page objects
-            # take the same HBSettingsNavigation instance, see
-            # LeaseConfigurationSetup.build_two_step_rental_page), and FMS's
-            # own property picker uses different display text for the same
-            # physical property (e.g. "GARDEN GROVE" vs "Hamilton Self
-            # Storage" here). A set_two_step() call in between two Lease
-            # Configuration steps overwrites nav.property_name with FMS's
-            # name, which then fails this picker outright. This page's own
-            # cached name (set by open_state_compliance_tools) doesn't get
-            # clobbered by an unrelated page object's navigation.
+            # Prefer this page's cached property_name — nav.property_name is
+            # shared with FMS Initial Setup and can be overwritten with a
+            # different display string for the same facility.
             self.open_state_compliance_tools(self.property_name)
             super_lease_section = self.page.get_by_role(
-                "button", name=re.compile(r"Super Lease.*Property")
+                "button", name=self._SUPER_LEASE_SECTION
             )
             expect(super_lease_section).to_be_visible(timeout=self.timeout)
             if super_lease_section.get_attribute("aria-expanded") != "true":
                 super_lease_section.click()
+
+    def _super_lease_switch(self):
+        return self.page.get_by_role(
+            "button", name=self._SUPER_LEASE_SWITCH
+        ).get_by_role("switch")
+
+    def _clickwrap_switch(self):
+        return self.page.get_by_role(
+            "button", name=self._CLICKWRAP_SWITCH
+        ).get_by_role("switch")
+
+    def _dismiss_confirm_modal(self) -> None:
+        modal = self.page.locator(self._CONFIRM_MODAL)
+        if modal.count() == 0:
+            return
+        # Prefer the visible one (stale clones can remain attached).
+        for index in range(modal.count()):
+            candidate = modal.nth(index)
+            if not candidate.is_visible():
+                continue
+            self.page.keyboard.press("Escape")
+            try:
+                expect(candidate).to_be_hidden(timeout=waits().short)
+            except AssertionError:
+                close = candidate.locator(
+                    'button[name="QA-v-card-HbIcon-mdi-close"]'
+                )
+                if close.count() and close.first.is_visible():
+                    close.first.click(force=True)
+                    expect(candidate).to_be_hidden(timeout=waits().short)
+            break
+
+    def _confirm_modal_action(self, action: str) -> None:
+        """Confirm Activate / Disable in the Super Lease / Clickwrap modal.
+
+        ``action`` is the primary label: Activate | Disable.
+        """
+        # Role-based: the QA name is not always present on the confirm
+        # primary (live 2026-09-18 Activate modal), and Cancel may be plain
+        # text rather than a button. Scope to the confirm card that owns
+        # this action so a leftover modal is not used.
+        modal = self.page.locator(self._CONFIRM_MODAL).filter(
+            has=self.page.get_by_role("button", name=action, exact=True)
+        )
+        button = modal.get_by_role("button", name=action, exact=True)
+        expect(button).to_be_visible(timeout=self.timeout)
+        # Live 2026-09-18: Playwright locator.click on these buttons does not
+        # invoke Vue's buttonClicked; call it on the wrapper component.
+        button.evaluate(
+            """(btn) => {
+              let el = btn;
+              while (el) {
+                const vue = el.__vue__;
+                if (vue && typeof vue.buttonClicked === 'function') {
+                  vue.buttonClicked();
+                  return;
+                }
+                el = el.parentElement;
+              }
+              throw new Error('HbBottomActionBar buttonClicked not found');
+            }"""
+        )
+        self.page.wait_for_timeout(waits().short)
+        self._dismiss_confirm_modal()
+
+    def _set_switch(
+        self, switch, *, enable: bool, action_when_enabling: str = "Activate"
+    ) -> None:
+        if switch.is_checked() == enable:
+            return
+        switch.click(force=True)
+        self._confirm_modal_action(
+            action_when_enabling if enable else "Disable"
+        )
+        if enable:
+            expect(switch).to_be_checked(timeout=self.timeout)
+        else:
+            expect(switch).not_to_be_checked(timeout=self.timeout)
 
     @log_method_exceptions
     def set_super_lease(self, enable: bool) -> None:
         action = "Enable" if enable else "Disable"
         with allure.step(f"{action} Super Lease"):
             self.open_super_lease()
-            super_lease_checkbox = self.page.get_by_role("button", name=re.compile(r"^Super Lease")).get_by_role("switch")
-            if super_lease_checkbox.is_checked() != enable:
-                super_lease_checkbox.click(force=True)
-                if enable:
-                    activate_button = self.page.get_by_role(
-                        "button", name="Activate", exact=True
-                    )
-                    expect(activate_button).to_be_visible(timeout=self.timeout)
-                    activate_button.click()
-                    expect(activate_button).to_be_hidden(timeout=self.timeout)
-                else:
-                    disable_button = self.page.get_by_role(
-                        "button", name="Disable", exact=True
-                    )
-                    expect(disable_button).to_be_visible(timeout=self.timeout)
-                    disable_button.click()
-                    expect(disable_button).to_be_hidden(timeout=self.timeout)
+            self._set_switch(self._super_lease_switch(), enable=enable)
 
     @log_method_exceptions
     def is_super_lease_enabled(self) -> bool:
         with allure.step("Read Super Lease state"):
             self.open_super_lease()
-            super_lease_checkbox = self.page.get_by_role(
-                "button", name=re.compile(r"^Super Lease")
-            ).get_by_role("switch")
-            return super_lease_checkbox.is_checked()
+            return self._super_lease_switch().is_checked()
 
     @log_method_exceptions
     def open_clickwrap_signature(self) -> None:
         with allure.step("Open Clickwrap Signature"):
             clickwrap_signature = self.page.get_by_role(
-                "button", name=re.compile(r"^Clickwrap Signature")
+                "button", name=self._CLICKWRAP_SWITCH
             )
             expect(clickwrap_signature).to_be_visible(timeout=self.timeout)
             if clickwrap_signature.get_attribute("aria-expanded") != "true":
@@ -114,71 +181,54 @@ class HBLeaseConfigurationPage:
         with allure.step(f"{action} Clickwrap Signature"):
             self.open_super_lease()
             self.open_clickwrap_signature()
-            clickwrap_checkbox = self.page.get_by_role("button", name=re.compile(r"^Clickwrap Signature")).get_by_role("switch")
-            already_set = clickwrap_checkbox.is_checked() == enable
-            if not already_set and not enable and clickwrap_checkbox.is_disabled():
-                # Clickwrap is locked on while Super Lease is enabled.
+            clickwrap = self._clickwrap_switch()
+            # Clickwrap is locked on while Super Lease is enabled.
+            if (
+                not enable
+                and clickwrap.is_checked()
+                and (
+                    clickwrap.is_disabled()
+                    or clickwrap.get_attribute("aria-disabled") == "true"
+                )
+            ):
                 self.set_super_lease(False)
                 self.open_super_lease()
                 self.open_clickwrap_signature()
-                clickwrap_checkbox = self.page.get_by_role("button", name=re.compile(r"^Clickwrap Signature")).get_by_role("switch")
-                already_set = clickwrap_checkbox.is_checked() == enable
-            if not already_set:
-                clickwrap_checkbox.click(force=True)
-                if enable:
-                    activate_button = self.page.get_by_role(
-                        "button", name="Activate", exact=True
-                    )
-                    expect(activate_button).to_be_visible(timeout=self.timeout)
-                    activate_button.click()
-                    expect(activate_button).to_be_hidden(timeout=self.timeout)
-                else:
-                    disable_button = self.page.get_by_role(
-                        "button", name="Disable", exact=True
-                    )
-                    expect(disable_button).to_be_visible(timeout=self.timeout)
-                    disable_button.click()
-                    expect(disable_button).to_be_hidden(timeout=self.timeout)
+                clickwrap = self._clickwrap_switch()
+            self._set_switch(clickwrap, enable=enable)
 
     @log_method_exceptions
     def is_clickwrap_signature_enabled(self) -> bool:
         with allure.step("Read Clickwrap Signature state"):
             self.open_super_lease()
             self.open_clickwrap_signature()
-            clickwrap_checkbox = self.page.get_by_role(
-                "button", name=re.compile(r"^Clickwrap Signature")
-            ).get_by_role("switch")
-            return clickwrap_checkbox.is_checked()
+            return self._clickwrap_switch().is_checked()
 
     @log_method_exceptions
     def assert_super_lease_enabled(self) -> None:
         with allure.step("Assert Super Lease is enabled"):
             self.open_super_lease()
-            super_lease_checkbox = self.page.get_by_role("button", name=re.compile(r"^Super Lease")).get_by_role("switch")
-            expect(super_lease_checkbox).to_be_checked()
+            expect(self._super_lease_switch()).to_be_checked()
 
     @log_method_exceptions
     def assert_super_lease_disabled(self) -> None:
         with allure.step("Assert Super Lease is disabled"):
             self.open_super_lease()
-            super_lease_checkbox = self.page.get_by_role("button", name=re.compile(r"^Super Lease")).get_by_role("switch")
-            expect(super_lease_checkbox).not_to_be_checked()
+            expect(self._super_lease_switch()).not_to_be_checked()
 
     @log_method_exceptions
     def assert_clickwrap_signature_enabled(self) -> None:
         with allure.step("Assert Clickwrap Signature is enabled"):
             self.open_super_lease()
             self.open_clickwrap_signature()
-            clickwrap_checkbox = self.page.get_by_role("button", name=re.compile(r"^Clickwrap Signature")).get_by_role("switch")
-            expect(clickwrap_checkbox).to_be_checked()
+            expect(self._clickwrap_switch()).to_be_checked()
 
     @log_method_exceptions
     def assert_clickwrap_signature_disabled(self) -> None:
         with allure.step("Assert Clickwrap Signature is disabled"):
             self.open_super_lease()
             self.open_clickwrap_signature()
-            clickwrap_checkbox = self.page.get_by_role("button", name=re.compile(r"^Clickwrap Signature")).get_by_role("switch")
-            expect(clickwrap_checkbox).not_to_be_checked()
+            expect(self._clickwrap_switch()).not_to_be_checked()
 
     @log_method_exceptions
     def assert_clickwrap_signature_locked(self) -> None:
@@ -187,5 +237,4 @@ class HBLeaseConfigurationPage:
         ):
             self.open_super_lease()
             self.open_clickwrap_signature()
-            clickwrap_checkbox = self.page.get_by_role("button", name=re.compile(r"^Clickwrap Signature")).get_by_role("switch")
-            expect(clickwrap_checkbox).to_be_disabled()
+            expect(self._clickwrap_switch()).to_be_disabled()

@@ -151,19 +151,19 @@ class MPFMSInitialSetupPage:
             return (trigger.text_content() or "").strip()
 
     @log_method_exceptions
-    def set_landing_page_layout(self, property_id: str, layout: str, *, clear_cache: bool = True) -> None:
+    def set_landing_page_layout(self, property_id: str, layout: str) -> None:
         """Sets the Landing Page Layout (Default / Grid View / List View)
-        for a property. No-ops if already set to `layout`."""
+        for a property. No-ops if already set to `layout`.
+
+        Does not Clear Cache; callers flush once via
+        ``LeaseConfigurationSetup.flush_website_cache``.
+        """
         with allure.step(
             f"Set Landing Page Layout to {layout} ({property_id})"
         ):
             self.open_landing_page_layout_settings(property_id)
             trigger = self._layout_trigger(0)
             current = (trigger.text_content() or "").strip()
-            # Only mark clear-pending / Save when the dropdown actually changes.
-            # Callers that batch several FMS writes pass clear_cache=False
-            # and flush once at the end; clear_cache() itself no-ops when
-            # no clear is pending.
             if current != layout:
                 with allure.step(
                     f"Save Landing Page Layout ({current} → {layout})"
@@ -184,14 +184,11 @@ class MPFMSInitialSetupPage:
                         "button", name="Save", exact=True
                     ).click()
                     expect(trigger).to_have_text(layout, timeout=self.timeout)
-                    self.nav.mark_website_cache_clear_pending()
             else:
                 with allure.step(
                     f"Skip Save (Landing Page Layout already {layout})"
                 ):
                     pass
-            if clear_cache:
-                self.nav.clear_cache()
 
     @log_method_exceptions
     def open_value_tier_layout_settings(self, property_id: str) -> None:
@@ -229,19 +226,21 @@ class MPFMSInitialSetupPage:
             return (trigger.text_content() or "").strip()
 
     @log_method_exceptions
-    def set_value_tier_layout(self, property_id: str, layout: str, *, clear_cache: bool = True) -> None:
+    def set_value_tier_layout(self, property_id: str, layout: str) -> None:
         """Sets the Value Tier Layout (Grid View / List View - no
         "Default", unlike Landing Page Layout) for a property. No-ops if
         already set to `layout`. Requires Landing Page Layout to be Grid
-        View or List View so the control is on the form."""
+        View or List View so the control is on the form.
+
+        Does not Clear Cache; callers flush once via
+        ``LeaseConfigurationSetup.flush_website_cache``.
+        """
         with allure.step(
             f"Set Value Tier Layout to {layout} ({property_id})"
         ):
             self.open_value_tier_layout_settings(property_id)
             trigger = self._layout_trigger(1)
             current = (trigger.text_content() or "").strip()
-            # See set_landing_page_layout: Save + mark clear-pending only on change;
-            # clear_cache() below flushes only when pending (or force).
             if current != layout:
                 with allure.step(
                     f"Save Value Tier Layout ({current} → {layout})"
@@ -260,14 +259,11 @@ class MPFMSInitialSetupPage:
                         "button", name="Save", exact=True
                     ).click()
                     expect(trigger).to_have_text(layout, timeout=self.timeout)
-                    self.nav.mark_website_cache_clear_pending()
             else:
                 with allure.step(
                     f"Skip Save (Value Tier Layout already {layout})"
                 ):
                     pass
-            if clear_cache:
-                self.nav.clear_cache()
 
     @log_method_exceptions
     def open_advance_reservation_days_settings(self, property_id: str) -> None:
@@ -303,8 +299,11 @@ class MPFMSInitialSetupPage:
     @log_method_exceptions
     def set_advance_reservation_days(self, property_id: str, days: int) -> None:
         """Sets Advance Reservation Days for a property. No-ops the
-        field write if already set to `days`; Clear Cache only runs when
-        the value actually changed (clear-pending flag)."""
+        field write if already set to `days`.
+
+        Does not Clear Cache; callers flush once via
+        ``LeaseConfigurationSetup.flush_website_cache``.
+        """
         with allure.step(
             f"Set Advance Reservation Days to {days} ({property_id})"
         ):
@@ -322,17 +321,17 @@ class MPFMSInitialSetupPage:
                     expect(field).to_have_value(
                         str(days), timeout=self.timeout
                     )
-                    self.nav.mark_website_cache_clear_pending()
             else:
                 with allure.step(
                     f"Skip Save (Advance Reservation Days already {days})"
                 ):
                     pass
-            self.nav.clear_cache()
 
     @log_method_exceptions
     def open_two_step_settings(self, property_name: str) -> None:
         with allure.step("Open Two-Step Rental settings"):
+            # Do not Escape-dismiss here — Settings is a v-dialog; Escape
+            # closes the panel (see HBSettingsNavigation.select_property).
             fms_initial_setup = self.page.locator(
                 ".setting-menu-list-inactive-color, .setting-menu-list-active-color",
                 has_text="FMS Initial Setup",
@@ -390,10 +389,9 @@ class MPFMSInitialSetupPage:
             # enable_two_step_clickwrap_and_super_lease's own caching
             # comments). Retries the whole toggle against the real
             # signal - the switch actually flipping - rather than
-            # assuming one attempt works: clear_cache() plus a fresh
-            # re-open of this panel (open_two_step_settings again, not
-            # just re-clicking the still-open one) is what actually
-            # picks up current state.
+            # assuming one attempt works. Mid-flow Clear Cache is owned
+            # by LeaseConfigurationSetup (eligibility flush before enable);
+            # retries here only reload + wait for FMS lag.
             max_attempts = 3
             for attempt in range(max_attempts):
                 self.open_two_step_settings(property_name)
@@ -441,7 +439,9 @@ class MPFMSInitialSetupPage:
                             )
                         self.page.keyboard.press("Escape")
                         self.page.reload(wait_until="load")
-                        self.nav.clear_cache(force=True)
+                        # Clear Cache is owned by LeaseConfigurationSetup
+                        # (flush_website_cache / mid-enable eligibility). Wait
+                        # here for FMS eligibility lag after reload only.
                         self.page.wait_for_timeout(waits().long)
                         continue
                 with allure.step(
@@ -528,63 +528,39 @@ class MPFMSInitialSetupPage:
                             expect(two_step_switch).not_to_be_checked(
                                 timeout=self.timeout
                             )
-                        self.nav.mark_website_cache_clear_pending()
                         break
                     except AssertionError:
                         if attempt == max_attempts - 1:
                             raise
                         with allure.step(
                             f"Recover Two-Step toggle "
-                            f"(reload, force Clear Cache, wait) "
+                            f"(reload, wait) "
                             f"before attempt {attempt + 2}"
                         ):
                             # Confirmed live (2026-09-08, stage): a failure
                             # here (e.g. the confirmation dialog never showing
                             # matching text) can still leave its Vuetify modal
                             # overlay (".v-overlay--active") up, which then
-                            # blocks clear_cache()'s own first click for the
-                            # rest of its timeout - clearing any stray overlay
-                            # first (a no-op if none is up) so the retry itself
-                            # doesn't get stuck behind whatever this attempt
-                            # left open.
+                            # blocks later clicks - clear any stray overlay
+                            # first (a no-op if none is up).
                             self.page.keyboard.press("Escape")
                             expect(
                                 self.page.locator(".v-overlay--active")
                             ).to_be_hidden(timeout=self.timeout)
                             # Confirmed live (2026-09-09, stage): even a
-                            # genuinely fresh login/session (a brand-new
-                            # browser context sharing none of this page's
-                            # state) hit this exact same rejection immediately
-                            # after Super Lease/Clickwrap were enabled - ruling
-                            # out every client-side caching theory tried here (a
-                            # stale Vue component flag, a closed Settings
-                            # panel, cached localStorage/sessionStorage all
-                            # confirmed live not to be it). What's left is a
-                            # backend propagation delay: whatever FMS Initial
-                            # Setup's eligibility check actually reads lags
-                            # behind the write Super Lease/Clickwrap just made
-                            # elsewhere. A real wait - not just a reload - is
-                            # what actually gives that time to catch up;
-                            # reload() and clear_cache(force=True) are kept too
-                            # since they're cheap and don't hurt, even though
-                            # neither alone was the fix.
-                            #
-                            # Extended to disable too (2026-09-09): observed live
-                            # that disabling Two-Step right after disabling
-                            # Super Lease/Clickwrap hit the same silent click
-                            # rejection (switch stayed checked, no error) that
-                            # this recovery previously only ran for enable - the
-                            # same eligibility check plausibly gates disabling
-                            # too, so the same reload+wait is applied here
-                            # rather than the plain clear_cache() this branch
-                            # used to fall back to on disable.
+                            # genuinely fresh login/session hit this same
+                            # rejection immediately after Super Lease/
+                            # Clickwrap were enabled. What's left is a
+                            # backend propagation delay: FMS eligibility
+                            # lags behind the write. A real wait - not just
+                            # a reload - is what gives that time to catch up.
+                            # Clear Cache is not retried here (stacked mid-
+                            # flow clears caused warm/loading flakes); the
+                            # caller flushes once via flush_website_cache.
                             self.page.reload(wait_until="load")
-                            self.nav.clear_cache(force=True)
                             self.page.wait_for_timeout(20000)
-            # Flush only when the toggle actually changed (clear pending). When the
-            # switch already matched, skip - callers that previously cleared
-            # on already_configured no longer do.
-            self.nav.clear_cache()
+            # Do not Clear Cache here — LeaseConfigurationSetup /
+            # Mariposa precondition flush_website_cache runs once at the end.
 
     @log_method_exceptions
     def verify_two_step_on_storefront(

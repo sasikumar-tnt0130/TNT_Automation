@@ -11,6 +11,8 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
+import subprocess
 import sys
 from contextlib import contextmanager
 from functools import lru_cache
@@ -30,6 +32,11 @@ _TRACES_DIR = Path(__file__).resolve().parent.parent / "reports" / "traces"
 # Test leaf → video dir registered while recording contexts close; Allure
 # attach happens once after every fixture teardown for that test.
 _PENDING_VIDEO_DIRS: dict[str, Path] = {}
+# Test leaf → [(allure attachment name, webm path), ...] for multi-video tests
+# (storefront execution + HB settings + HB validation).
+_PENDING_NAMED_VIDEOS: dict[str, list[tuple[str, Path]]] = {}
+# Paths already attached during context/page close (settings / validation).
+_IMMEDIATE_ATTACHED_VIDEOS: set[Path] = set()
 _ATTACHED_VIDEO_LEAFS: set[str] = set()
 _PENDING_TRACE_DIRS: dict[str, Path] = {}
 _ATTACHED_TRACE_LEAFS: set[str] = set()
@@ -398,13 +405,31 @@ def _video_dir_for_current_test() -> Path:
     return path
 
 
+def _video_dir_for_kind(kind: str) -> Path:
+    """Stable folder for long-lived contexts (module HB settings).
+
+    Not wiped by per-test reset_video_attach_state_for_test, so an open
+    module recording is not deleted mid-run. Not nested under the test
+    leaf — leaf at module open is often wrong / empty.
+    """
+    safe = re.sub(r"[^\w.-]+", "_", kind).strip("_")[:40] or "setup"
+    path = _VIDEOS_DIR / f"_{safe}"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def video_recording_options(
-    app_config, *, size: dict[str, int] | None = None, enabled: bool | None = None
+    app_config,
+    *,
+    size: dict[str, int] | None = None,
+    enabled: bool | None = None,
+    video_kind: str | None = None,
 ) -> dict[str, Any]:
     """Playwright new_context kwargs for video, or {} when disabled.
 
     enabled=None → follow [browser] record_video.
     enabled=False → never record (setup/discovery contexts).
+    video_kind → optional subfolder for long-lived setup contexts.
     """
     if enabled is False:
         return {}
@@ -420,7 +445,11 @@ def video_recording_options(
     # Size is required when headed uses no_viewport; otherwise Playwright
     # falls back to 1280x720 which may not match the maximized window.
     resolved = size or _viewport_from_config(app_config)
-    video_dir = _video_dir_for_current_test()
+    video_dir = (
+        _video_dir_for_kind(video_kind)
+        if video_kind
+        else _video_dir_for_current_test()
+    )
     return {
         "record_video_dir": str(video_dir),
         "record_video_size": {
@@ -503,6 +532,278 @@ def _primary_trace(trace_dir: Path) -> Path | None:
     return max(files, key=lambda path: path.stat().st_size)
 
 
+def _ffmpeg_exe() -> str | None:
+    """Prefer imageio-ffmpeg's bundled binary; fall back to PATH."""
+    try:
+        import imageio_ffmpeg
+
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        pass
+    return shutil.which("ffmpeg")
+
+
+def _merge_webms(paths: list[Path], out: Path) -> Path | None:
+    """Concatenate webms into one file (setup → execution → validation)."""
+    usable = [p for p in paths if p.exists() and p.stat().st_size >= 1024]
+    if not usable:
+        return None
+    if len(usable) == 1:
+        return usable[0]
+    ffmpeg = _ffmpeg_exe()
+    if not ffmpeg:
+        logger.warning(
+            "Cannot merge %s videos into one execution-video — "
+            "install imageio-ffmpeg (or ffmpeg on PATH)",
+            len(usable),
+        )
+        return None
+    out.parent.mkdir(parents=True, exist_ok=True)
+    logger.info(
+        "Merging %s Allure video clips (setup→execution→validation)...",
+        len(usable),
+    )
+    # 1280p + realtime VP8 keeps teardown from hanging for minutes.
+    parts: list[str] = []
+    for index, _path in enumerate(usable):
+        parts.append(
+            f"[{index}:v]scale=1280:720:force_original_aspect_ratio=decrease,"
+            f"pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=15[v{index}]"
+        )
+    concat_in = "".join(f"[v{i}]" for i in range(len(usable)))
+    filter_complex = (
+        ";".join(parts)
+        + f";{concat_in}concat=n={len(usable)}:v=1:a=0[v]"
+    )
+    cmd = [
+        ffmpeg,
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        *[arg for path in usable for arg in ("-i", str(path))],
+        "-filter_complex",
+        filter_complex,
+        "-map",
+        "[v]",
+        "-c:v",
+        "libvpx",
+        "-cpu-used",
+        "8",
+        "-deadline",
+        "realtime",
+        "-crf",
+        "35",
+        "-b:v",
+        "0",
+        "-an",
+        str(out),
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=False,
+        )
+        if result.returncode != 0 or not out.exists() or out.stat().st_size < 1024:
+            logger.warning(
+                "ffmpeg merge failed (rc=%s): %s",
+                result.returncode,
+                (result.stderr or result.stdout or "")[-800:],
+            )
+            return None
+        logger.info(
+            "Merged %s clips → %s (%s bytes)",
+            len(usable),
+            out.name,
+            out.stat().st_size,
+        )
+        return out
+    except Exception as exc:
+        logger.warning("ffmpeg merge skipped: %s", exc)
+        return None
+
+
+def _ordered_video_paths(named: list[tuple[str, Path]]) -> list[Path]:
+    """Merge order: setup → execution (storefront) → validation → other."""
+
+    def _rank(name: str) -> tuple[int, str]:
+        lower = name.lower()
+        if "setup" in lower:
+            return (0, name)
+        if (
+            lower.startswith("execution-video")
+            or "storefront" in lower
+            or lower.startswith("mobile-execution")
+            or lower.startswith("mp-storefront")
+        ):
+            return (1, name)
+        if "validation" in lower:
+            return (2, name)
+        if "hb" in lower or "settings" in lower:
+            return (3, name)
+        return (4, name)
+
+    ordered: list[Path] = []
+    seen: set[Path] = set()
+    for _name, path in sorted(named, key=lambda item: _rank(item[0])):
+        try:
+            resolved = path.resolve()
+        except OSError:
+            resolved = path
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        ordered.append(path)
+    return ordered
+
+
+def _defer_hb_clip_for_merge(app_config, name: str) -> bool:
+    """Queue-only HB clips so teardown can merge setup|execution|validation."""
+    if not app_config.getboolean("browser", "record_setup_video", fallback=False):
+        return False
+    lower = name.lower()
+    return (
+        lower.startswith("hb-")
+        or "setup" in lower
+        or "validation" in lower
+        or "settings" in lower
+    )
+
+
+def _queue_named_video(leaf: str, name: str, path: Path | None) -> None:
+    """Register a finalized .webm for Allure attach (skip empty/blank files)."""
+    if path is None:
+        return
+    try:
+        if not path.exists() or path.stat().st_size < 1024:
+            logger.warning(
+                "Skipping blank/empty video %s (%s bytes)",
+                name,
+                path.stat().st_size if path.exists() else 0,
+            )
+            return
+    except OSError:
+        return
+    _PENDING_NAMED_VIDEOS.setdefault(leaf, []).append((name, path))
+    _PENDING_VIDEO_DIRS[leaf] = path.parent
+
+
+def _attach_webm_file(name: str, path: Path) -> bool:
+    """Attach one webm to the current Allure test; return True if attached."""
+    try:
+        if not path.exists() or path.stat().st_size < 1024:
+            logger.warning(
+                "Skipping blank Allure video %s (%s bytes)",
+                name,
+                path.stat().st_size if path.exists() else 0,
+            )
+            return False
+        allure.attach.file(
+            str(path),
+            name=name,
+            attachment_type=allure.attachment_type.WEBM,
+            extension="webm",
+        )
+        logger.info(
+            "Allure attached %s (%s bytes) for %s",
+            name,
+            path.stat().st_size,
+            _test_video_leaf(),
+        )
+        return True
+    except Exception as exc:
+        logger.debug("Allure video attach skipped for %s: %s", name, exc)
+        return False
+
+
+def close_page_with_video(
+    page, app_config, *, name: str, attach_now: bool | None = None
+) -> None:
+    """Close one page and queue/attach its recording under ``name``.
+
+    HB setup clips default to queue-only when ``record_setup_video`` is on
+    so teardown can merge them into a single ``execution-video``.
+    """
+    if page is None:
+        return
+    leaf = _test_video_leaf()
+    path: Path | None = None
+    try:
+        if page.video is not None:
+            path = Path(page.video.path())
+    except Exception:
+        path = None
+    try:
+        page.close()
+    except Exception as exc:
+        logger.debug("page close skipped: %s", exc)
+        return
+    _queue_named_video(leaf, name, path)
+    if attach_now is None:
+        attach_now = not _defer_hb_clip_for_merge(app_config, name)
+    if (
+        attach_now
+        and path is not None
+        and should_attach_video(app_config, failed=None)
+    ):
+        if _attach_webm_file(name, path):
+            _IMMEDIATE_ATTACHED_VIDEOS.add(path)
+
+
+def finalize_hb_admin_session_video_for_test(
+    hb_login_page: HBLoginPage,
+    app_config,
+    *,
+    name: str = "execution-video",
+) -> None:
+    """Close the shared tab to finalize this test's execution-video.
+
+    Does **not** reopen HB afterward — that short “launch dashboard” clip was
+    being attached as a second video. The next test (or next HB use) calls
+    ``ensure_hb_admin_page_ready`` to open a fresh tab when needed.
+    """
+    if not app_config.getboolean("browser", "record_video", fallback=False):
+        return
+    page = getattr(hb_login_page, "page", None)
+    if page is None or page.is_closed():
+        return
+    try:
+        if page.video is None:
+            return
+    except Exception:
+        return
+    if getattr(hb_login_page, "browser_context", None) is None:
+        try:
+            hb_login_page.browser_context = page.context
+        except Exception:
+            pass
+    close_page_with_video(page, app_config, name=name, attach_now=False)
+
+
+def ensure_hb_admin_page_ready(
+    hb_login_page: HBLoginPage, app_config
+) -> None:
+    """Reopen the shared HB tab if the previous test closed it for video."""
+    page = getattr(hb_login_page, "page", None)
+    if page is not None and not page.is_closed():
+        return
+    context = getattr(hb_login_page, "browser_context", None)
+    if context is None:
+        return
+    try:
+        new_page = context.new_page()
+        prepare_desktop_page(new_page, app_config, record_artifacts=False)
+        hb_login_page.rebind_page(new_page)
+        base = hb_login_page.base_url.rstrip("/").removesuffix("/login")
+        new_page.goto(f"{base}/dashboard", wait_until="domcontentloaded")
+        hb_login_page.ensure_logged_in()
+    except Exception as exc:
+        logger.warning("HB admin page re-open failed: %s", exc)
+
+
 def close_context_with_videos(
     context,
     app_config,
@@ -510,27 +811,39 @@ def close_context_with_videos(
     failed: bool | None = None,
     name: str = "execution-video",
 ) -> None:
-    """Close context; finalize video + trace for a single Allure attach later.
+    """Close context; queue named video(s) + trace for Allure attach later.
 
-    Attach is deferred to attach_execution_video_for_test() /
-    attach_execution_trace_for_test() so every context can finish first.
+    Storefront ``execution-video`` is deferred to teardown. HB setup /
+    validation clips are also deferred when ``record_setup_video`` is on
+    so they merge into one Allure attachment (setup → execution →
+    validation).
     """
-    del failed, name
     if context is None:
         return
     _stop_tracing_to_dir(context)
     leaf = _test_video_leaf()
+    paths: list[Path] = []
     for page in list(context.pages):
         if page.video is None:
             continue
         try:
-            _PENDING_VIDEO_DIRS[leaf] = Path(page.video.path()).parent
-            break
+            paths.append(Path(page.video.path()))
         except Exception:
             pass
-    else:
+    if not paths:
         _PENDING_VIDEO_DIRS.setdefault(leaf, _video_dir_for_current_test())
     context.close()
+    defer_hb = _defer_hb_clip_for_merge(app_config, name)
+    for index, path in enumerate(paths):
+        attach_name = name if index == 0 else f"{name}-{index + 1}"
+        _queue_named_video(leaf, attach_name, path)
+        if (
+            attach_name != "execution-video"
+            and not defer_hb
+            and should_attach_video(app_config, failed=failed)
+        ):
+            if _attach_webm_file(attach_name, path):
+                _IMMEDIATE_ATTACHED_VIDEOS.add(path)
 
 
 def attach_execution_video_for_test(
@@ -539,42 +852,55 @@ def attach_execution_video_for_test(
     failed: bool | None = None,
     test_name: str | None = None,
 ) -> None:
-    """Attach one execution-video to Allure for this test (idempotent)."""
+    """Attach queued execution video(s) to Allure (idempotent).
+
+    Desktop rentals use one shared tab (setup → storefront → validation),
+    so a single clip is enough — no ffmpeg merge.
+    """
     raw = test_name or os.environ.get("HB_MP_CURRENT_TEST") or ""
     leaf = re.sub(r"[^\w.-]+", "_", raw).strip("_")[:80] if raw else _test_video_leaf()
     if not leaf:
         leaf = _test_video_leaf()
     if leaf in _ATTACHED_VIDEO_LEAFS:
         return
-    video_dir = _PENDING_VIDEO_DIRS.pop(leaf, None) or (_VIDEOS_DIR / leaf)
-    primary = _primary_webm(video_dir)
-    if primary is None:
-        return
-    for path in video_dir.glob("*.webm"):
-        if path == primary:
-            continue
-        try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            pass
     _ATTACHED_VIDEO_LEAFS.add(leaf)
+    video_dir = _PENDING_VIDEO_DIRS.pop(leaf, None) or (_VIDEOS_DIR / leaf)
+    named = list(_PENDING_NAMED_VIDEOS.pop(leaf, []))
     if should_attach_video(app_config, failed=failed):
-        allure.attach.file(
-            str(primary),
-            name="execution-video",
-            attachment_type=allure.attachment_type.WEBM,
-            extension="webm",
-        )
-        logger.info(
-            "Allure attached execution-video (%s bytes) for %s",
-            primary.stat().st_size,
-            leaf,
-        )
+        if not named:
+            primary = _primary_webm(video_dir)
+            if primary is not None:
+                named = [("execution-video", primary)]
+        # Prefer a single execution-video when several were queued (e.g. a
+        # leftover name); do not ffmpeg-merge — shared-tab flow records one.
+        execution = [
+            (name, path)
+            for name, path in named
+            if name == "execution-video" or name.startswith("execution-video")
+        ]
+        to_attach = execution or named
+        seen: set[Path] = set()
+        for attach_name, path in to_attach:
+            try:
+                resolved = path.resolve()
+            except OSError:
+                resolved = path
+            if resolved in seen or path in _IMMEDIATE_ATTACHED_VIDEOS:
+                continue
+            seen.add(resolved)
+            _attach_webm_file(attach_name, path)
     elif app_config.getboolean("browser", "record_video", fallback=False):
-        try:
-            primary.unlink(missing_ok=True)
-        except OSError:
-            pass
+        for _, path in named:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        primary = _primary_webm(video_dir)
+        if primary is not None:
+            try:
+                primary.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def attach_execution_trace_for_test(
@@ -638,6 +964,8 @@ def reset_video_attach_state_for_test(test_name: str | None = None) -> None:
     leaf = re.sub(r"[^\w.-]+", "_", raw).strip("_")[:80] if raw else _test_video_leaf()
     _ATTACHED_VIDEO_LEAFS.discard(leaf)
     _PENDING_VIDEO_DIRS.pop(leaf, None)
+    _PENDING_NAMED_VIDEOS.pop(leaf, None)
+    _IMMEDIATE_ATTACHED_VIDEOS.clear()
     _ATTACHED_TRACE_LEAFS.discard(leaf)
     _PENDING_TRACE_DIRS.pop(leaf, None)
     _TRACE_SEQ.pop(leaf, None)
@@ -650,17 +978,28 @@ def reset_video_attach_state_for_test(test_name: str | None = None) -> None:
                     pass
         base.mkdir(parents=True, exist_ok=True)
 
+
+def _will_record_video(app_config, record_video: bool | None) -> bool:
+    if not app_config.getboolean("browser", "record_video", fallback=False):
+        return False
+    if record_video is True or record_video is None:
+        return True
+    return app_config.getboolean("browser", "record_setup_video", fallback=False)
+
+
 def desktop_context_options(
-    app_config, *, record_video: bool | None = None
+    app_config, *, record_video: bool | None = None, video_kind: str | None = None
 ) -> dict[str, Any]:
     """kwargs for browser.new_context(...) — desktop HB/storefront pages.
 
-    Headed: no_viewport so --start-maximized can fill the OS window.
-    Headless: explicit viewport from the largest connected display.
-    Config viewport_width/height pins size in both modes.
+    Headed: no_viewport + --start-maximized / ensure_window_maximized so the
+    OS window fills the display (desktop view, not a small fixed box).
+    Video still records via record_video_size (explicit size) — do not pin
+    context viewport just because recording is on (that shrank the window).
 
-    record_video=False skips Playwright video (module signing, discovery,
-    payment-setup contexts). None follows [browser] record_video.
+    Headless: explicit viewport from the largest connected display.
+    record_video=None → follow [browser] record_video.
+    record_video=False → still record when record_setup_video=true.
     """
     opts: dict[str, Any] = {"permissions": browser_permissions(app_config)}
     width = app_config.getint("browser", "viewport_width", fallback=0) or None
@@ -672,26 +1011,35 @@ def desktop_context_options(
     elif headless:
         opts["viewport"] = _viewport_from_config(app_config)
     else:
-        # Required for maximize to drive the page size (Playwright default
-        # viewport otherwise keeps a fixed box inside a maximized frame).
+        # Maximized real window; page size follows the OS chrome.
         opts["no_viewport"] = True
 
-    # Setup contexts default to no video unless record_setup_video=true.
     if record_video is None:
-        opts.update(video_recording_options(app_config))
+        opts.update(video_recording_options(app_config, video_kind=video_kind))
     elif record_video:
-        opts.update(video_recording_options(app_config, enabled=True))
+        opts.update(
+            video_recording_options(
+                app_config, enabled=True, video_kind=video_kind
+            )
+        )
     else:
         setup_ok = app_config.getboolean(
             "browser", "record_setup_video", fallback=False
         )
         if setup_ok:
-            opts.update(video_recording_options(app_config, enabled=True))
+            opts.update(
+                video_recording_options(
+                    app_config,
+                    enabled=True,
+                    video_kind=video_kind or "hb-settings",
+                )
+            )
     return opts
 
 
 def ensure_window_maximized(page) -> None:
     """Maximize the real Chrome window after new_page (headed only)."""
+    session = None
     try:
         session = page.context.new_cdp_session(page)
         target = session.send("Browser.getWindowForTarget")
@@ -702,8 +1050,23 @@ def ensure_window_maximized(page) -> None:
             "Browser.setWindowBounds",
             {"windowId": window_id, "bounds": {"windowState": "maximized"}},
         )
+        # Some hosts leave a small restored box after setWindowBounds;
+        # re-assert maximized once the first paint settles.
+        page.wait_for_timeout(200)
+        session.send(
+            "Browser.setWindowBounds",
+            {"windowId": window_id, "bounds": {"windowState": "maximized"}},
+        )
     except Exception as exc:
         logger.debug("Window maximize skipped: %s", exc)
+    finally:
+        # Detach or browser.close() can hang on Windows after many
+        # maximize calls (HB setup/validation page slices).
+        if session is not None:
+            try:
+                session.detach()
+            except Exception:
+                pass
 
 
 def prepare_desktop_page(
@@ -720,26 +1083,65 @@ def prepare_desktop_page(
     maybe_start_tracing(page.context, app_config, enabled=record_artifacts)
 
 
-@contextmanager
-def hb_admin_context(browser, environment_config, app_config) -> Iterator[HBLoginPage]:
-    """One temporary Chromium context, logged into HB admin.
+def create_hb_admin_session(
+    browser,
+    environment_config,
+    app_config,
+    *,
+    record_video: bool | None = False,
+    video_kind: str | None = "hb-settings",
+) -> tuple[Any, HBLoginPage]:
+    """Open a Chromium context and log into HB admin once.
 
-    Use for module/class signing and lease setup. Storefront checks are
-    not opened here — lease helpers' rental_page verify paths are unused,
-    so a second context would only waste Chromium resources.
-    Video/trace are off by default (setup); see record_setup_video.
+    Caller owns teardown (``close_context_with_videos``). Prefer the
+    module-scoped ``hb_admin_session`` fixture for MP admin configure;
+    use ``hb_admin_context`` when open→yield→close in one block is enough.
+
+    ``record_video=None`` follows ``[browser] record_video`` (shared-tab
+    rentals). ``record_video=False`` still records when
+    ``record_setup_video`` is true. ``video_kind`` isolates long-lived
+    module recordings from per-test wipe.
     """
     timeout = app_config.getint("browser", "timeout")
+    kind = video_kind
+    if record_video is True:
+        # Per-test clip — live in the test video folder.
+        kind = None
+    elif record_video is None:
+        # Shared-tab rentals: stable folder (not wiped by per-test reset).
+        kind = "shared-rental"
     context = browser.new_context(
-        **desktop_context_options(app_config, record_video=False)
+        **desktop_context_options(
+            app_config, record_video=record_video, video_kind=kind
+        )
+    )
+    page = context.new_page()
+    prepare_desktop_page(page, app_config, record_artifacts=True)
+    hb_login_page = HBLoginPage(page, environment_config, timeout)
+    hb_login_page.ensure_logged_in()
+    return context, hb_login_page
+
+
+@contextmanager
+def hb_admin_context(
+    browser,
+    environment_config,
+    app_config,
+    *,
+    video_name: str = "hb-admin-setup-video",
+    record_video: bool | None = False,
+) -> Iterator[HBLoginPage]:
+    """One temporary Chromium context, logged into HB admin.
+
+    Use for one-off open→yield→close callers. Module/class MP admin
+    configure should use the ``hb_admin_session`` fixture instead so the
+    same window is reused for APW, signing, and layout restore.
+    Video/trace follow record_setup_video unless record_video is forced.
+    """
+    context, hb_login_page = create_hb_admin_session(
+        browser, environment_config, app_config, record_video=record_video
     )
     try:
-        page = context.new_page()
-        prepare_desktop_page(page, app_config, record_artifacts=False)
-        hb_login_page = HBLoginPage(page, environment_config, timeout)
-        if hb_login_page.open_login_page():
-            hb_login_page.submit_login_credentials()
-        hb_login_page.assert_login_successful()
         yield hb_login_page
     finally:
-        close_context_with_videos(context, app_config, name="hb-admin-setup-video")
+        close_context_with_videos(context, app_config, name=video_name)

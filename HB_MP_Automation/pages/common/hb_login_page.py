@@ -22,14 +22,99 @@ class HBLoginPage:
         self, page: Page, environment_config: EnvironmentConfig, timeout: float
     ) -> None:
         self.page = page
+        self.browser_context = page.context
         self.base_url = environment_config.hb_base_url
         self.username_value = environment_config.hb_username
         self.password_value = environment_config.hb_password
         self.login_url = self.base_url
         self.timeout = timeout
+        self._bind_page_locators(page)
+
+    def _bind_page_locators(self, page: Page) -> None:
+        self.page = page
+        if page is not None and not page.is_closed():
+            try:
+                self.browser_context = page.context
+            except Exception:
+                pass
         self.username = page.get_by_role("textbox", name="Username")
         self.password = page.get_by_role("textbox", name="Password")
         self.login_button = page.get_by_role("button", name="Login")
+
+    def rebind_page(self, page: Page) -> None:
+        """Point this helper at a new tab in the same HB context (video slice)."""
+        self._bind_page_locators(page)
+
+    @log_method_exceptions
+    def ensure_logged_in(self) -> None:
+        """Reuse an already-authenticated HB window; login only if needed.
+
+        When this page is already on an HB app route (dashboard, settings,
+        etc.) without the login form, do nothing — callers then open
+        Settings / FMS / lease panels on the same window. Otherwise run
+        the normal open_login_page → credentials flow.
+
+        For Tenants / Leads / main-shell navigation after a shared admin
+        session left Settings open, use ``ensure_on_dashboard`` instead.
+        """
+        with allure.step("Ensure HB logged in"):
+            url = self.page.url or ""
+            base = self.base_url.rstrip("/")
+            try:
+                login_form_visible = self.username.is_visible(timeout=500)
+            except Exception:
+                login_form_visible = False
+            if login_form_visible:
+                self.submit_login_credentials()
+                self.assert_login_successful()
+                return
+            if url.startswith(base) and not re.search(r"/login(?:/|$|\?)", url, re.I):
+                return
+            if self.open_login_page():
+                self.submit_login_credentials()
+            self.assert_login_successful()
+
+    @log_method_exceptions
+    def ensure_on_dashboard(self) -> None:
+        """Logged-in HB main shell — leave Settings / dialogs if open.
+
+        Module ``hb_admin_session`` often sits in Settings after signing /
+        Clear Cache. Tenants and Leads need ``#search-box`` on the main
+        shell; clicking it while Settings' ``v-dialog`` is active times out
+        (live 2026-09-18, legacy_superlease HB validation).
+        """
+        with allure.step("Ensure HB dashboard (leave Settings if open)"):
+            self.ensure_logged_in()
+            base = self.base_url.rstrip("/").removesuffix("/login")
+            dashboard_url = f"{base}/dashboard"
+            for _ in range(3):
+                dialog = self.page.locator(".v-dialog__content--active").first
+                if dialog.count() == 0 or not dialog.is_visible():
+                    break
+                self.page.keyboard.press("Escape")
+                try:
+                    expect(dialog).to_be_hidden(timeout=waits().short)
+                except AssertionError:
+                    close = dialog.locator(
+                        'button[name="QA-v-card-HbIcon-mdi-close"]'
+                    )
+                    if close.count() > 0 and close.first.is_visible():
+                        close.first.click(force=True)
+            settings_open = False
+            try:
+                settings_open = self.page.get_by_role(
+                    "textbox", name="Filter"
+                ).is_visible(timeout=500)
+            except Exception:
+                settings_open = False
+            on_dashboard = bool(
+                re.search(r"/dashboard", self.page.url or "", re.I)
+            )
+            if settings_open or not on_dashboard:
+                self.page.goto(dashboard_url, wait_until="domcontentloaded")
+                expect(self.page).to_have_url(
+                    re.compile(r"/dashboard"), timeout=self.timeout
+                )
 
     @log_method_exceptions
     def open_login_page(self) -> bool:

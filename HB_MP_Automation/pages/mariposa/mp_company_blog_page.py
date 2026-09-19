@@ -662,5 +662,5 @@ class MPCompanyBlogPage:
                 raise AssertionError(
                     f"Save Company Blog was rejected: {caution_banner.text_content()}"
                 )
-            self.nav.mark_website_cache_clear_pending()
-            self.nav.clear_cache()
+            # Callers flush once via LeaseConfigurationSetup.flush_website_cache
+            # (or nav.clear_cache) after all admin Saves for this precondition.

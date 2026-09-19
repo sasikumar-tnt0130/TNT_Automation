@@ -1,28 +1,22 @@
 import allure
 import pytest
 
-from common_utils.browser_sessions import hb_admin_context
 from common_utils.lease_configuration_setup import LeaseConfigurationSetup
 from common_utils.mp_legacy_reservation_setup import MPLegacyReservationSetup
 
 
 @pytest.fixture(scope="class")
-def _legacy_flow_configured(browser, environment_config, app_config) -> None:
-    """One-time admin setup for this class on a temporary HB context.
-
-    Server-side HB settings (not per-browser-session state). Uses one
-    Chromium context only — storefront verify on the signing helper is
-    unused, so a second context is not opened.
-    """
-    with hb_admin_context(browser, environment_config, app_config) as hb_login_page:
-        lease_configuration = LeaseConfigurationSetup(
-            hb_login_page, environment_config, app_config
+def _legacy_flow_configured(hb_admin_session, environment_config, app_config) -> None:
+    """One-time admin setup for this class on the module HB admin session."""
+    lease_configuration = LeaseConfigurationSetup(
+        hb_admin_session, environment_config, app_config
+    )
+    lease_configuration.disable_two_step_clickwrap_and_super_lease()
+    if environment_config.landing_page_layout:
+        lease_configuration.set_landing_page_layout(
+            environment_config.landing_page_layout
         )
-        lease_configuration.disable_two_step_clickwrap_and_super_lease()
-        if environment_config.landing_page_layout:
-            lease_configuration.set_landing_page_layout(
-                environment_config.landing_page_layout
-            )
+    lease_configuration.flush_website_cache()
 
 
 @allure.feature("MP Reservation")

@@ -53,6 +53,7 @@ def test_show_reservation_code_and_email(page, environment_config, app_config, m
 )
 @pytest.mark.smoke
 @pytest.mark.testrail("C683626")
+@pytest.mark.usefixtures("two_step_superlease_checked")
 def test_show_reservation_code_and_email_two_step(
     page,
     environment_config,
@@ -60,7 +61,7 @@ def test_show_reservation_code_and_email_two_step(
     mp_guest,
     two_step_property,
     property_landing_page_url,
-    hb_login_page,
+    hb_admin_session,
 ) -> None:
     # Same 8884/10603 checks against the environment's Two-Step property
     # (properties.ini `two_step_property`, e.g. uat_storoutlet/chula_vista
@@ -94,10 +95,8 @@ def test_show_reservation_code_and_email_two_step(
         )
 
     with allure.step("8881: reservation shows as a New Web Reservation lead in HB"):
-        if hb_login_page.open_login_page():
-            hb_login_page.submit_login_credentials()
-        hb_login_page.assert_login_successful()
-        leads_page = HBLeadManagementPage(page, timeout)
+        hb_admin_session.ensure_logged_in()
+        leads_page = HBLeadManagementPage(hb_admin_session.page, timeout)
         leads_page.open_leads(two_step_property.hb_property_name)
         # MPTwoStepReservationFormPage.select_move_in_date picks tomorrow by
         # this machine's date - HB shows exactly that as the Reservation
@@ -117,15 +116,13 @@ def test_show_reservation_code_and_email_two_step(
             f"Total Cost to Move-in {bill['total']}, Pay Now {bill['pay_now']}"
         )
 
-        if hb_login_page.open_login_page():
-            hb_login_page.submit_login_credentials()
-        hb_login_page.assert_login_successful()
+        hb_admin_session.ensure_logged_in()
         # Opened from the lead's own "Manage Reservation", not Task Center
         # (user choice 2026-09-13): stage's Task Center lists ~12,000
         # due-today tasks, 20 per page, oldest first.
         leads_page.open_leads(two_step_property.hb_property_name)
         leads_page.open_reservation_follow_up(mp_guest["email"], bill["space_number"])
-        follow_up = HBLeadFollowUpPage(page, timeout)
+        follow_up = HBLeadFollowUpPage(hb_admin_session.page, timeout)
         try:
             hb_lease = follow_up.read_lease_details()
         finally:

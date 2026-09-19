@@ -176,5 +176,4 @@ class MPCompanyPagesPage:
                 "Company Page details successfully updated", exact=True
             )
             expect(success).to_be_visible(timeout=self.timeout)
-            self.nav.mark_website_cache_clear_pending()
-            self.nav.clear_cache()
+            # Callers flush once via nav.clear_cache after all Saves.

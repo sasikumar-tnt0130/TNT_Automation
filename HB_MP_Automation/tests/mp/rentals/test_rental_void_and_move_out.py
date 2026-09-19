@@ -1,6 +1,7 @@
 import re
 
 import allure
+import pytest
 from playwright.sync_api import expect
 
 from common_utils.mp_two_step_reservation_setup import MPTwoStepReservationSetup
@@ -18,6 +19,7 @@ from pages.common.hb_transaction_history_page import HBTransactionHistoryPage
     "Reserve a Space and convert to Rental + Void the Payment and Invoice + "
     "Remove Card Details and Move out the Tenant"
 )
+@pytest.mark.usefixtures("two_step_superlease_checked")
 def test_void_remove_autopay_and_move_out(
     page,
     environment_config,
@@ -25,7 +27,7 @@ def test_void_remove_autopay_and_move_out(
     mp_guest,
     two_step_property,
     property_landing_page_url,
-    hb_login_page,
+    hb_admin_session,
     test_data,
 ) -> None:
     # Old Robot Mariposa ReservationAndRentals cases 3-5 on one storefront
@@ -52,23 +54,22 @@ def test_void_remove_autopay_and_move_out(
         bill = rental.rent_reserved_unit(mp_guest, {**rental_data, "enroll_autopay": True})
     space_number = bill["space_number"]
 
-    if hb_login_page.open_login_page():
-        hb_login_page.submit_login_credentials()
-    hb_login_page.assert_login_successful()
-    tenants = HBTenantSpacesPage(page, timeout)
+    hb_admin_session.ensure_logged_in()
+    hb_page = hb_admin_session.page
+    tenants = HBTenantSpacesPage(hb_page, timeout)
     tenants.open_tenants(two_step_property.hb_property_name)
     tenants.open_storefront_tenant(guest_name, space_number)
-    tenant_url = page.url
+    tenant_url = hb_page.url
 
     with allure.step("Void the payment and the invoice"):
-        history = HBTransactionHistoryPage(page, timeout)
+        history = HBTransactionHistoryPage(hb_page, timeout)
         history.open()
         history.void_payment(bill["pay_now"])
         history.void_open_invoice("Automation - void the storefront rental invoice")
 
     with allure.step("Remove the AutoPay card and move the tenant out"):
-        page.goto(tenant_url)
+        hb_page.goto(tenant_url)
         tenants.remove_autopay(space_number)
-        HBMoveOutPage(page, timeout).move_out_space(space_number, "No Longer Needed")
+        HBMoveOutPage(hb_page, timeout).move_out_space(space_number, "No Longer Needed")
         page.goto(tenant_url)
         expect(page.get_by_text(re.compile(r"CLOSED LEASES")).first).to_be_visible(timeout=timeout)

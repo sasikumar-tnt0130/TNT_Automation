@@ -9,9 +9,9 @@ from common_utils.mp_rental_cases import RentalCase
 # (user, 2026-09-15). Each is one real rental, checked on the storefront, in
 # the guest's inbox and in HB - found by its space number - then moved out
 # (common_utils/mp_rental_cases.py). It runs on the environment's Two-Step
-# property (environments.ini `two_step_property`), whose signing is only
-# checked, never changed (user, 2026-09-14); its ACH cases need ACH on that
-# property's payment gateway.
+# property (environments.ini `two_step_property`). Module fixture
+# ``two_step_superlease_checked`` enables Two-Step + Super Lease + Clickwrap
+# and flushes website cache. ACH cases need ACH on that property's gateway.
 
 
 @allure.feature("MP Rentals")

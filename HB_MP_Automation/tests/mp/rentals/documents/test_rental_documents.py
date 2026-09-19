@@ -126,9 +126,7 @@ def _run_document_rental(
             }
 
         with allure.step("HB Documents"):
-            if hb_login_page.open_login_page():
-                hb_login_page.submit_login_credentials()
-            hb_login_page.assert_login_successful()
+            hb_login_page.ensure_logged_in()
             tenants = HBTenantSpacesPage(hb_login_page.page, timeout)
             tenants.open_tenants(prop.hb_property_name)
             tenants.open_storefront_tenant(guest_name, space_number)
@@ -209,7 +207,7 @@ def _for_each_space_type(
                     property_landing_page_url=request.getfixturevalue(
                         "property_landing_page_url"
                     ),
-                    hb_login_page=request.getfixturevalue("hb_login_page"),
+                    hb_login_page=request.getfixturevalue("hb_admin_session"),
                     test_data=request.getfixturevalue("test_data"),
                     move_out_after_rental=request.getfixturevalue(
                         "move_out_after_rental"
@@ -297,7 +295,7 @@ class TestRentalDocuments:
         app_config,
         mp_guest,
         property_landing_page_url,
-        hb_login_page,
+        hb_admin_session,
         test_data,
         move_out_after_rental,
     ) -> None:
@@ -311,7 +309,7 @@ class TestRentalDocuments:
             app_config=app_config,
             mp_guest=mp_guest,
             property_landing_page_url=property_landing_page_url,
-            hb_login_page=hb_login_page,
+            hb_login_page=hb_admin_session,
             test_data=test_data,
             move_out_after_rental=move_out_after_rental,
             unit_type=None,
@@ -360,7 +358,7 @@ class TestRentalDocuments:
                 property_landing_page_url=request.getfixturevalue(
                     "property_landing_page_url"
                 ),
-                hb_login_page=request.getfixturevalue("hb_login_page"),
+                hb_login_page=request.getfixturevalue("hb_admin_session"),
                 test_data=request.getfixturevalue("test_data"),
                 move_out_after_rental=request.getfixturevalue(
                     "move_out_after_rental"
@@ -374,10 +372,10 @@ class TestRentalDocuments:
             # After lease assert, reopen docs panel is already open - check
             # protection-named or A1 coverage companion docs.
             docs = HBTenantDocumentsPage(
-                request.getfixturevalue("hb_login_page").page,
+                request.getfixturevalue("hb_admin_session").page,
                 request.getfixturevalue("app_config").getint("browser", "timeout"),
             )
-            protection = request.getfixturevalue("hb_login_page").page.get_by_role(
+            protection = request.getfixturevalue("hb_admin_session").page.get_by_role(
                 "row", name=re.compile(r"Protection|Enrollment|A1", re.I)
             )
             expect(protection.first).to_be_visible(
@@ -466,7 +464,7 @@ class TestRentalDocuments:
         app_config,
         mp_guest,
         property_landing_page_url,
-        hb_login_page,
+        hb_admin_session,
         test_data,
         move_out_after_rental,
     ) -> None:
@@ -480,7 +478,7 @@ class TestRentalDocuments:
             app_config=app_config,
             mp_guest=mp_guest,
             property_landing_page_url=property_landing_page_url,
-            hb_login_page=hb_login_page,
+            hb_login_page=hb_admin_session,
             test_data=test_data,
             move_out_after_rental=move_out_after_rental,
             unit_type=None,

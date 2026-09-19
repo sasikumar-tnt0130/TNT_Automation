@@ -116,10 +116,10 @@ class TestLayoutCombinations:
         return request.node.layout_shot_dir
 
     @pytest.fixture(autouse=True)
-    def _restore_layout(self, hb_login_page, environment_config, app_config):
+    def _restore_layout(self, hb_admin_session, environment_config, app_config):
         yield
         lease_configuration = LeaseConfigurationSetup(
-            hb_login_page, environment_config, app_config
+            hb_admin_session, environment_config, app_config
         )
         # Use the combined helper so restore still works when a Default
         # case left Value Tier Layout hidden on the FMS form.
@@ -127,6 +127,7 @@ class TestLayoutCombinations:
             environment_config.landing_page_layout,
             environment_config.value_tier_layout,
         )
+        lease_configuration.flush_website_cache()
 
     @pytest.mark.parametrize("landing_layout,tier_layout", LAYOUT_COMBINATIONS)
     @allure.title(
@@ -137,21 +138,23 @@ class TestLayoutCombinations:
         self,
         landing_layout,
         tier_layout,
-        hb_login_page,
+        hb_admin_session,
+        page,
         environment_config,
         app_config,
         request,
     ) -> None:
         lease_configuration = LeaseConfigurationSetup(
-            hb_login_page, environment_config, app_config
+            hb_admin_session, environment_config, app_config
         )
         lease_configuration.set_landing_and_value_tier_layouts(
             landing_layout, tier_layout
         )
+        lease_configuration.flush_website_cache()
 
         timeout = app_config.getint("browser", "timeout")
         rental_page = MPUnitSearchPage(
-            hb_login_page.page, environment_config.mp_base_url, timeout
+            page, environment_config.mp_base_url, timeout
         )
         rental_page.open_storefront()
         actual_landing_layout, actual_tier_layout = _select_unit(
@@ -182,7 +185,7 @@ class TestLayoutCombinations:
         self,
         landing_layout,
         tier_layout,
-        hb_login_page,
+        hb_admin_session,
         mobile_page,
         environment_config,
         app_config,
@@ -190,11 +193,12 @@ class TestLayoutCombinations:
         request,
     ) -> None:
         lease_configuration = LeaseConfigurationSetup(
-            hb_login_page, environment_config, app_config
+            hb_admin_session, environment_config, app_config
         )
         lease_configuration.set_landing_and_value_tier_layouts(
             landing_layout, tier_layout
         )
+        lease_configuration.flush_website_cache()
 
         timeout = app_config.getint("browser", "timeout")
         rental_page = MPUnitSearchPage(

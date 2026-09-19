@@ -206,6 +206,7 @@ class MPLegacyReservationSetup:
         autopay: bool = False,
         extras: dict | None = None,
         include_alternate: bool = True,
+        card: dict | None = None,
     ) -> dict:
         """Resume a just-created reservation ("Rent online now"), fill the
         rental application, pay by card or ACH - with or without autopay -
@@ -233,11 +234,12 @@ class MPLegacyReservationSetup:
         self.legacy_page.fill_rental_application(
             rental_data, alternate, guest, extras=extras
         )
+        card = card or {}
         payer = {
             "name": f"{guest['first_name']} {guest['last_name']}",
-            "card_number": self.environment_config.card_number,
-            "card_expiry": self.environment_config.card_expiry,
-            "card_cvc": self.environment_config.card_cvc,
+            "card_number": card.get("card_number") or self.environment_config.card_number,
+            "card_expiry": card.get("card_expiry") or self.environment_config.card_expiry,
+            "card_cvc": card.get("card_cvc") or self.environment_config.card_cvc,
             "routing_number": self.environment_config.ach_routing_number,
             "account_number": self.environment_config.ach_account_number,
         }
@@ -252,6 +254,9 @@ class MPLegacyReservationSetup:
                 f"the confirmation space {space_number}"
             )
         self.space_number = space_number
+        from common_utils.mp_lease_costs import read_confirmation_page_costs
+
+        confirmation_costs = read_confirmation_page_costs(self.legacy_page.page)
         save_confirmation_screenshot(
             self.legacy_page.page,
             self.confirmation_dir / f"rental-{space_number}.png",
@@ -262,6 +267,8 @@ class MPLegacyReservationSetup:
             "space_number": space_number,
             "ending": ending,
             "alternate": alternate,
+            "confirmation_charges": confirmation_costs["charges"],
+            "confirmation_total": confirmation_costs["total"],
         }
 
     @log_method_exceptions
@@ -273,10 +280,13 @@ class MPLegacyReservationSetup:
         amount_paid: float,
         security_deposit: float | None,
         autopay: bool = True,
-    ) -> None:
+        charges: dict[str, float] | None = None,
+    ) -> str:
         """The same Rental Confirmation / Auto Payment Confirmation checks as
-        the Two-Step flow (mp_rental_emails)."""
-        assert_rental_confirmation_emails(
+        the Two-Step flow (mp_rental_emails). Pass ``charges`` from the Lease
+        Summary / confirmation page to assert each cost line item in the email.
+        Returns the confirmation email plain text."""
+        return assert_rental_confirmation_emails(
             self.legacy_page.page.context,
             self.confirmation_dir,
             guest,
@@ -285,4 +295,5 @@ class MPLegacyReservationSetup:
             amount_paid,
             security_deposit,
             autopay,
+            charges=charges,
         )

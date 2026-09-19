@@ -828,45 +828,57 @@ class MPLegacyReservationFormPage:
 
     @log_method_exceptions
     def read_lease_totals(self) -> dict:
-        """The Lease Summary's space ("#0094 | 8' x 5'"), Security Deposit and
-        "Total Cost to Move-in: $X", read once the total has held for 3 s -
-        the protection plan and proration change it while the form fills
-        (confirmed live 2026-09-14: $177.20 before the $2,000 plan, $188.53
-        on the signed lease after it)."""
-        with allure.step("Read the lease summary"):
-            total_pattern = re.compile(r"Total Cost to Move-in:\s*\$([\d,]+\.\d{2})")
-            readings: list[str | None] = []
-            text = ""
-            for _ in range(int(self.timeout / 500)):
-                text = self.page.locator("body").inner_text()
-                total = total_pattern.search(text)
-                readings.append(total.group(1) if total else None)
-                if readings[-1] and len(readings) >= 6 and len(set(readings[-6:])) == 1:
-                    break
-                self.page.wait_for_timeout(waits().poll_interval)
-            else:
-                raise AssertionError(f"Lease Summary total never settled: {readings[-6:]}")
-            space = re.search(r"#(\S+)\s*\|", text)
-            deposit = re.search(r"Security Deposit\s*\$([\d,]+\.\d{2})", text)
-            # The rental's move-in date, as the form shows it: today on the
-            # desktop form, but the mobile one kept the reservation's date
-            # (tomorrow) - confirmed 2026-09-14 by the rental email.
-            move_in = re.search(
-                r"Select a Move-in Date\s*\*?\s*(\d{2}/\d{2}/\d{4})|Rent\s*\((\d{2}/\d{2}/\d{4})\s*-", text
+        """The Lease Summary's space ("#0094 | 8' x 5'"), charge rows,
+        Security Deposit and "Total Cost to Move-in: $X", read once the
+        total has held for 3 s - the protection plan and proration change
+        it while the form fills (confirmed live 2026-09-14: $177.20 before
+        the $2,000 plan, $188.53 on the signed lease after it)."""
+        from common_utils.mp_lease_costs import (
+            parse_charges_from_summary_text,
+            security_deposit_amount,
+        )
+
+        # allure.step("Read the lease summary") — omitted from report; still read.
+        total_pattern = re.compile(r"Total Cost to Move-in:\s*\$([\d,]+\.\d{2})")
+        readings: list[str | None] = []
+        text = ""
+        for _ in range(int(self.timeout / 500)):
+            text = self.page.locator("body").inner_text()
+            total = total_pattern.search(text)
+            readings.append(total.group(1) if total else None)
+            if readings[-1] and len(readings) >= 6 and len(set(readings[-6:])) == 1:
+                break
+            self.page.wait_for_timeout(waits().poll_interval)
+        else:
+            raise AssertionError(f"Lease Summary total never settled: {readings[-6:]}")
+        space = re.search(r"#(\S+)\s*\|", text)
+        charges = parse_charges_from_summary_text(text)
+        deposit = security_deposit_amount(charges)
+        if deposit is None:
+            deposit_match = re.search(r"Security Deposit\s*\$([\d,]+\.\d{2})", text)
+            deposit = (
+                float(deposit_match.group(1).replace(",", "")) if deposit_match else None
             )
-            totals = {
-                "space_number": space.group(1) if space else None,
-                "security_deposit": float(deposit.group(1).replace(",", "")) if deposit else None,
-                "total": float(readings[-1].replace(",", "")),
-                "move_in_date": (
-                    datetime.strptime(move_in.group(1) or move_in.group(2), "%m/%d/%Y").date()
-                    if move_in else None
-                ),
-            }
-            allure.attach(
-                repr(totals), name="storefront lease summary", attachment_type=allure.attachment_type.TEXT
-            )
-            return totals
+        # The rental's move-in date, as the form shows it: today on the
+        # desktop form, but the mobile one kept the reservation's date
+        # (tomorrow) - confirmed 2026-09-14 by the rental email.
+        move_in = re.search(
+            r"Select a Move-in Date\s*\*?\s*(\d{2}/\d{2}/\d{4})|Rent\s*\((\d{2}/\d{2}/\d{4})\s*-", text
+        )
+        totals = {
+            "space_number": space.group(1) if space else None,
+            "charges": charges,
+            "security_deposit": deposit,
+            "total": float(readings[-1].replace(",", "")),
+            "move_in_date": (
+                datetime.strptime(move_in.group(1) or move_in.group(2), "%m/%d/%Y").date()
+                if move_in else None
+            ),
+        }
+        # allure.attach(
+        #     repr(totals), name="storefront lease summary", attachment_type=allure.attachment_type.TEXT
+        # )
+        return totals
 
     @log_method_exceptions
     def submit_rental(self) -> str:

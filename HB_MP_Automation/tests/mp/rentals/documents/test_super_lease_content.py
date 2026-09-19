@@ -16,6 +16,7 @@ signing (Clickwrap on, Super Lease on, Pay Now):
 from __future__ import annotations
 
 import re
+from datetime import date
 
 import allure
 import pytest
@@ -26,6 +27,7 @@ from common_utils.browser_sessions import (
     prepare_desktop_page,
 )
 from common_utils.mp_legacy_reservation_setup import MPLegacyReservationSetup
+from common_utils.mp_lease_costs import assert_costs_match_three_ways
 from common_utils.mp_rental_cases import move_out_rental
 from common_utils.mp_rental_extras import rental_extras
 from config.config_reader import load_property
@@ -86,9 +88,14 @@ def _run_super_lease_rental(
                 include_alternate=include_alternate,
             )
             space_number = rental["space_number"]
+            charges = rental.get("charges") or {}
+            amount_paid = rental["total"]
+            move_in_date = rental.get("move_in_date") or date.today()
             result = {
                 "space_number": space_number,
                 "ending": rental.get("ending"),
+                "charges": charges,
+                "total": amount_paid,
                 "alternate": rental.get("alternate"),
                 "extras": {
                     key: extras[key]
@@ -108,10 +115,19 @@ def _run_super_lease_rental(
                 f"Expected Super Lease Pay Now ending, got {rental.get('ending')!r}"
             )
 
-        with allure.step("HB Superlease PDF"):
-            if hb_login_page.open_login_page():
-                hb_login_page.submit_login_credentials()
-            hb_login_page.assert_login_successful()
+        with allure.step("Rental confirmation email + lease agreement costs"):
+            email_body = setup.assert_rental_emails(
+                mp_guest,
+                space_number,
+                move_in_date,
+                amount_paid,
+                rental.get("security_deposit"),
+                autopay=False,
+                charges=rental.get("confirmation_charges") or charges or None,
+            )
+
+        with allure.step("HB Superlease PDF — three-way cost compare"):
+            hb_login_page.ensure_logged_in()
             tenants = HBTenantSpacesPage(hb_login_page.page, timeout)
             tenants.open_tenants(prop.hb_property_name)
             tenants.open_storefront_tenant(guest_name, space_number)
@@ -122,7 +138,17 @@ def _run_super_lease_rental(
                 space_number if snippet == "{space}" else snippet
                 for snippet in pdf_must_contain
             ]
-            text = docs.assert_document_pdf_contains(SUPERLEASE_DOC, resolved)
+            text = docs.assert_document_pdf_contains(
+                SUPERLEASE_DOC, resolved, space_number=space_number
+            )
+            assert_costs_match_three_ways(
+                mp_charges=rental.get("confirmation_charges") or {},
+                mp_total=rental.get("confirmation_total"),
+                email_text=email_body,
+                lease_text=text,
+                fallback_charges=charges,
+                space_number=space_number,
+            )
             missing_absent = [
                 snippet
                 for snippet in (pdf_must_not_contain or [])
@@ -181,7 +207,7 @@ class TestSuperLeaseContent:
         app_config,
         mp_guest,
         property_landing_page_url,
-        hb_login_page,
+        hb_admin_session,
         test_data,
         move_out_after_rental,
     ) -> None:
@@ -193,7 +219,7 @@ class TestSuperLeaseContent:
             app_config=app_config,
             mp_guest=mp_guest,
             property_landing_page_url=property_landing_page_url,
-            hb_login_page=hb_login_page,
+            hb_login_page=hb_admin_session,
             test_data=test_data,
             move_out_after_rental=move_out_after_rental,
             extras=extras,
@@ -223,7 +249,7 @@ class TestSuperLeaseContent:
         app_config,
         mp_guest,
         property_landing_page_url,
-        hb_login_page,
+        hb_admin_session,
         test_data,
         move_out_after_rental,
     ) -> None:
@@ -235,7 +261,7 @@ class TestSuperLeaseContent:
             app_config=app_config,
             mp_guest=mp_guest,
             property_landing_page_url=property_landing_page_url,
-            hb_login_page=hb_login_page,
+            hb_login_page=hb_admin_session,
             test_data=test_data,
             move_out_after_rental=move_out_after_rental,
             extras=extras,
@@ -254,7 +280,7 @@ class TestSuperLeaseContent:
         app_config,
         mp_guest,
         property_landing_page_url,
-        hb_login_page,
+        hb_admin_session,
         test_data,
         move_out_after_rental,
     ) -> None:
@@ -269,7 +295,7 @@ class TestSuperLeaseContent:
             app_config=app_config,
             mp_guest=mp_guest,
             property_landing_page_url=property_landing_page_url,
-            hb_login_page=hb_login_page,
+            hb_login_page=hb_admin_session,
             test_data=test_data,
             move_out_after_rental=move_out_after_rental,
             extras=extras,
@@ -293,7 +319,7 @@ class TestSuperLeaseContent:
         app_config,
         mp_guest,
         property_landing_page_url,
-        hb_login_page,
+        hb_admin_session,
         test_data,
         move_out_after_rental,
     ) -> None:
@@ -305,7 +331,7 @@ class TestSuperLeaseContent:
             app_config=app_config,
             mp_guest=mp_guest,
             property_landing_page_url=property_landing_page_url,
-            hb_login_page=hb_login_page,
+            hb_login_page=hb_admin_session,
             test_data=test_data,
             move_out_after_rental=move_out_after_rental,
             extras=extras,
@@ -325,7 +351,7 @@ class TestSuperLeaseContent:
         app_config,
         mp_guest,
         property_landing_page_url,
-        hb_login_page,
+        hb_admin_session,
         test_data,
         move_out_after_rental,
     ) -> None:
@@ -340,7 +366,7 @@ class TestSuperLeaseContent:
             app_config=app_config,
             mp_guest=mp_guest,
             property_landing_page_url=property_landing_page_url,
-            hb_login_page=hb_login_page,
+            hb_login_page=hb_admin_session,
             test_data=test_data,
             move_out_after_rental=move_out_after_rental,
             extras=extras,
@@ -364,7 +390,7 @@ class TestSuperLeaseContent:
         app_config,
         mp_guest,
         property_landing_page_url,
-        hb_login_page,
+        hb_admin_session,
         test_data,
         move_out_after_rental,
     ) -> None:
@@ -376,7 +402,7 @@ class TestSuperLeaseContent:
             app_config=app_config,
             mp_guest=mp_guest,
             property_landing_page_url=property_landing_page_url,
-            hb_login_page=hb_login_page,
+            hb_login_page=hb_admin_session,
             test_data=test_data,
             move_out_after_rental=move_out_after_rental,
             extras=extras,
@@ -396,7 +422,7 @@ class TestSuperLeaseContent:
         app_config,
         mp_guest,
         property_landing_page_url,
-        hb_login_page,
+        hb_admin_session,
         test_data,
         move_out_after_rental,
     ) -> None:
@@ -411,7 +437,7 @@ class TestSuperLeaseContent:
             app_config=app_config,
             mp_guest=mp_guest,
             property_landing_page_url=property_landing_page_url,
-            hb_login_page=hb_login_page,
+            hb_login_page=hb_admin_session,
             test_data=test_data,
             move_out_after_rental=move_out_after_rental,
             extras=extras,
@@ -435,7 +461,7 @@ class TestSuperLeaseContent:
         app_config,
         mp_guest,
         property_landing_page_url,
-        hb_login_page,
+        hb_admin_session,
         test_data,
         move_out_after_rental,
     ) -> None:
@@ -447,7 +473,7 @@ class TestSuperLeaseContent:
             app_config=app_config,
             mp_guest=mp_guest,
             property_landing_page_url=property_landing_page_url,
-            hb_login_page=hb_login_page,
+            hb_login_page=hb_admin_session,
             test_data=test_data,
             move_out_after_rental=move_out_after_rental,
             extras=extras,
@@ -467,7 +493,7 @@ class TestSuperLeaseContent:
         app_config,
         mp_guest,
         property_landing_page_url,
-        hb_login_page,
+        hb_admin_session,
         test_data,
         move_out_after_rental,
     ) -> None:
@@ -482,7 +508,7 @@ class TestSuperLeaseContent:
             app_config=app_config,
             mp_guest=mp_guest,
             property_landing_page_url=property_landing_page_url,
-            hb_login_page=hb_login_page,
+            hb_login_page=hb_admin_session,
             test_data=test_data,
             move_out_after_rental=move_out_after_rental,
             extras=extras,
@@ -506,7 +532,7 @@ class TestSuperLeaseContent:
         app_config,
         mp_guest,
         property_landing_page_url,
-        hb_login_page,
+        hb_admin_session,
         test_data,
         move_out_after_rental,
     ) -> None:
@@ -518,7 +544,7 @@ class TestSuperLeaseContent:
             app_config=app_config,
             mp_guest=mp_guest,
             property_landing_page_url=property_landing_page_url,
-            hb_login_page=hb_login_page,
+            hb_login_page=hb_admin_session,
             test_data=test_data,
             move_out_after_rental=move_out_after_rental,
             extras=extras,
@@ -538,7 +564,7 @@ class TestSuperLeaseContent:
         app_config,
         mp_guest,
         property_landing_page_url,
-        hb_login_page,
+        hb_admin_session,
         test_data,
         move_out_after_rental,
     ) -> None:
@@ -550,7 +576,7 @@ class TestSuperLeaseContent:
             app_config=app_config,
             mp_guest=mp_guest,
             property_landing_page_url=property_landing_page_url,
-            hb_login_page=hb_login_page,
+            hb_login_page=hb_admin_session,
             test_data=test_data,
             move_out_after_rental=move_out_after_rental,
             extras=extras,
@@ -574,7 +600,7 @@ class TestSuperLeaseContent:
         app_config,
         mp_guest,
         property_landing_page_url,
-        hb_login_page,
+        hb_admin_session,
         test_data,
         move_out_after_rental,
     ) -> None:
@@ -586,7 +612,7 @@ class TestSuperLeaseContent:
             app_config=app_config,
             mp_guest=mp_guest,
             property_landing_page_url=property_landing_page_url,
-            hb_login_page=hb_login_page,
+            hb_login_page=hb_admin_session,
             test_data=test_data,
             move_out_after_rental=move_out_after_rental,
             extras=extras,

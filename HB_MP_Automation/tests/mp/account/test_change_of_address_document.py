@@ -42,7 +42,7 @@ def test_change_of_address_generates_document(
     app_config,
     mp_guest,
     property_landing_page_url,
-    hb_login_page,
+    hb_admin_session,
     test_data,
     move_out_after_rental,
 ) -> None:
@@ -73,13 +73,15 @@ def test_change_of_address_generates_document(
     store_ctx = browser.new_context(**desktop_context_options(app_config))
     try:
         with allure.step("HB: Legacy Traditional signing on the PMS property"):
-            LeaseConfigurationSetup(
-                hb_login_page,
+            setup = LeaseConfigurationSetup(
+                hb_admin_session,
                 environment_config,
                 app_config,
                 property_name=prop.lease_configuration_property_name,
                 fms_property_name=prop.fms_property_name,
-            ).disable_clickwrap_and_super_lease()
+            )
+            setup.disable_clickwrap_and_super_lease()
+            setup.flush_website_cache()
 
         page = store_ctx.new_page()
         prepare_desktop_page(page, app_config)
@@ -116,13 +118,11 @@ def test_change_of_address_generates_document(
                 )
 
         with allure.step("HB: Change of Address document (when synced)"):
-            if hb_login_page.open_login_page():
-                hb_login_page.submit_login_credentials()
-            hb_login_page.assert_login_successful()
-            tenants = HBTenantSpacesPage(hb_login_page.page, timeout)
+            hb_admin_session.ensure_logged_in()
+            tenants = HBTenantSpacesPage(hb_admin_session.page, timeout)
             tenants.open_tenants(prop.hb_property_name)
             tenants.open_storefront_tenant(guest_name, space_number)
-            docs = HBTenantDocumentsPage(hb_login_page.page, timeout)
+            docs = HBTenantDocumentsPage(hb_admin_session.page, timeout)
             docs.open_documents_menu()
             try:
                 docs.assert_documents_listed(["Change of address"])
@@ -155,7 +155,7 @@ def test_change_of_address_generates_document(
         elif space_number:
             try:
                 move_out_rental(
-                    hb_login_page,
+                    hb_admin_session,
                     timeout,
                     prop.hb_property_name,
                     guest_name,

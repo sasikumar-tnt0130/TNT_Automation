@@ -19,9 +19,15 @@ from common_utils.browser_sessions import (
     mark_storefront_failure_captured,
 )
 from common_utils.mp_legacy_reservation_setup import MPLegacyReservationSetup
+from common_utils.mp_lease_costs import (
+    assert_costs_match_three_ways,
+    format_money,
+    security_deposit_amount,
+)
 from common_utils.mp_two_step_reservation_setup import MPTwoStepReservationSetup
 from pages.common.hb_lead_management_page import HBLeadManagementPage
 from pages.common.hb_move_out_page import HBMoveOutPage
+from pages.common.hb_tenant_documents_page import HBTenantDocumentsPage
 from pages.common.hb_tenant_spaces_page import HBTenantSpacesPage
 
 _SCREENSHOTS_DIR = Path(__file__).resolve().parent.parent / "reports" / "screenshots"
@@ -58,9 +64,12 @@ class RentalCase:
 
 
 def _log_in(hb_login_page) -> None:
-    if hb_login_page.open_login_page():
-        hb_login_page.submit_login_credentials()
-    hb_login_page.assert_login_successful()
+    """Reuse the module HB admin window on a clean dashboard shell.
+
+    Signing / Clear Cache leave Settings open; Tenants needs the main
+    shell (see HBLoginPage.ensure_on_dashboard).
+    """
+    hb_login_page.ensure_on_dashboard()
 
 
 def move_out_rental(
@@ -200,6 +209,7 @@ def run_rental_case(
     move_out: bool = True,
     cancel_reservation_hold: bool = True,
     skip_hb_on_confirmation_failure: bool = False,
+    card: dict | None = None,
 ) -> None:
     """Reserve, rent, check the emails and the HB tenant, then move out -
     also when a step fails, once the rental form has named the space.
@@ -209,6 +219,9 @@ def run_rental_case(
     skip_hb_on_confirmation_failure: gateway matrix suites set this so a
     failed storefront rental-confirmation email check does not continue into
     HB tenant validation (the failure is still raised after an Allure note).
+
+    card: optional overrides for card_number / card_expiry / card_cvc
+    (hosted-field format cases — MRECOM-323). Defaults to secrets.ini.
     """
     timeout = app_config.getint("browser", "timeout")
     guest_name = f"{guest['first_name']} {guest['last_name']}"
@@ -219,7 +232,14 @@ def run_rental_case(
     tenant_url = None
     move_in_date = date.today()
     failure = None
+    charges: dict[str, float] | None = None
+    confirmation_charges: dict[str, float] | None = None
+    confirmation_total: float | None = None
+    ending: str | None = None
+    email_body: str | None = None
     try:
+        # Desktop rentals share one tab with HB (URL switch). Do not slice
+        # videos here — one continuous Playwright recording is enough.
         setup_class = MPTwoStepReservationSetup if two_step else MPLegacyReservationSetup
         setup = setup_class(storefront_page, environment_config, app_config, property_url=property_url)
         with allure.step("Reserve a unit" + (" as a business" if case.rab else "")):
@@ -247,22 +267,40 @@ def run_rental_case(
             try:
                 if two_step:
                     bill = setup.rent_reserved_unit(
-                        guest, {**rental_data, "enroll_autopay": case.autopay}, payment_method=case.payment
+                        guest,
+                        {**rental_data, "enroll_autopay": case.autopay},
+                        payment_method=case.payment,
+                        card=card,
                     )
                     space_number, amount_paid = bill["space_number"], bill["pay_now"]
-                    security_deposit = next(
-                        (amount for label, amount in bill["charges"].items() if "deposit" in label.lower()),
-                        None,
+                    charges = bill.get("charges") or {}
+                    confirmation_charges = bill.get("confirmation_charges") or {}
+                    confirmation_total = bill.get("confirmation_total")
+                    security_deposit = security_deposit_amount(
+                        confirmation_charges or charges
                     )
+                    ending = "pay_now"
                 else:
                     rental = setup.convert_reservation_to_rental(
-                        guest, rental_data, payment_method=case.payment, autopay=case.autopay
+                        guest,
+                        rental_data,
+                        payment_method=case.payment,
+                        autopay=case.autopay,
+                        card=card,
                     )
                     space_number, amount_paid = rental["space_number"], rental["total"]
-                    security_deposit = rental["security_deposit"]
+                    charges = rental.get("charges") or {}
+                    confirmation_charges = rental.get("confirmation_charges") or {}
+                    confirmation_total = rental.get("confirmation_total")
+                    security_deposit = (
+                        rental.get("security_deposit")
+                        if rental.get("security_deposit") is not None
+                        else security_deposit_amount(confirmation_charges or charges)
+                    )
                     # The move-in date the rental form showed (today on desktop,
                     # the reservation's date on mobile), else today.
                     move_in_date = rental.get("move_in_date") or move_in_date
+                    ending = rental.get("ending")
             except BaseException as rent_error:
                 if skip_hb_on_confirmation_failure:
                     with allure.step("HB validation skipped: rental confirmation failed"):
@@ -275,12 +313,19 @@ def run_rental_case(
         rented = True
 
         confirmation_error: BaseException | None = None
+        cost_charges = confirmation_charges or charges
         with allure.step(
             "Verify rental confirmation" + (" and autopay" if case.autopay else "") + " emails"
         ):
             try:
-                setup.assert_rental_emails(
-                    guest, space_number, move_in_date, amount_paid, security_deposit, autopay=case.autopay
+                email_body = setup.assert_rental_emails(
+                    guest,
+                    space_number,
+                    move_in_date,
+                    amount_paid,
+                    security_deposit,
+                    autopay=case.autopay,
+                    charges=cost_charges if (two_step or ending == "pay_now") else None,
                 )
             except BaseException as error:
                 confirmation_error = error
@@ -302,7 +347,18 @@ def run_rental_case(
                     )
             raise confirmation_error
 
-        with allure.step("Verify in HB: a current tenant, paid" + (", on autopay" if case.autopay else ", no autopay")):
+        if confirmation_total is not None:
+            allure.attach(
+                f"${format_money(confirmation_total)}",
+                name="Total Cost to Move-in (MP confirmation)",
+                attachment_type=allure.attachment_type.TEXT,
+            )
+
+        with allure.step(
+            "Verify in HB: a current tenant, paid"
+            + (", on autopay" if case.autopay else ", no autopay")
+        ):
+            # Reuse module hb_admin_session — do not open a second HB window.
             _log_in(hb_login_page)
             tenants = HBTenantSpacesPage(hb_login_page.page, timeout)
             tenants.open_tenants(property_config.hb_property_name)
@@ -311,13 +367,46 @@ def run_rental_case(
                 space_number,
                 move_in_date,
                 amount_paid,
-                card_last4=environment_config.card_number[-4:] if case.autopay and case.payment == "card" else None,
+                card_last4=(
+                    (
+                        (card or {}).get("card_number")
+                        or environment_config.card_number
+                        or ""
+                    )[-4:]
+                    if case.autopay and case.payment == "card"
+                    else None
+                ),
                 ach_last4=(
-                    environment_config.ach_account_number[-4:] if case.autopay and case.payment == "ach" else None
+                    environment_config.ach_account_number[-4:]
+                    if case.autopay and case.payment == "ach"
+                    else None
                 ),
                 no_autopay=not case.autopay,
             )
             tenant_url = hb_login_page.page.url
+
+        # Sibling of HB tenant checks — Superlease PDF on the same shared tab
+        # after tenant validation (desktop: one window, URL-switched).
+        if cost_charges and (two_step or ending == "pay_now"):
+            with allure.step(
+                "Compare costs: MP confirmation | email | lease agreement"
+            ):
+                docs = HBTenantDocumentsPage(hb_login_page.page, timeout)
+                docs.open_documents_menu()
+                lease_doc = "Superlease"
+                docs.assert_documents_listed([lease_doc])
+                lease_text = docs.open_document_pdf_text(
+                    lease_doc, space_number=space_number
+                )
+                assert_costs_match_three_ways(
+                    mp_charges=confirmation_charges or {},
+                    mp_total=confirmation_total,
+                    email_text=email_body or "",
+                    lease_text=lease_text,
+                    fallback_charges=charges,
+                    wrap_step=False,
+                    space_number=space_number,
+                )
     except BaseException as error:
         failure = error
         if isinstance(error, Exception):
@@ -327,9 +416,10 @@ def run_rental_case(
         space_number = space_number or (setup.space_number if setup else None)
         if reserved:
             try:
-                # Desktop rentals share one page for Mariposa + HB. If we
-                # failed on the storefront, clean up in a fresh HB context so
-                # the recorded page (and video) stay on Mariposa at the error.
+                # Prefer the dedicated HB admin page (module hb_admin_session).
+                # Only when storefront and HB share one page (legacy callers)
+                # and the case failed on Mariposa, clean up in a fresh HB
+                # context so the recorded storefront video stays on the error.
                 same_page = storefront_page is hb_login_page.page
                 if failure is not None and same_page:
                     browser = hb_login_page.page.context.browser

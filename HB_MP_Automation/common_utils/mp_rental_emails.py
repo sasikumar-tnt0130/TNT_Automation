@@ -34,7 +34,8 @@ def assert_rental_confirmation_emails(
     security_deposit: float | None,
     autopay: bool = True,
     get_access_baseline: int | None = None,
-) -> None:
+    charges: dict[str, float] | None = None,
+) -> str:
     """Old Robot suite's 10604 ("Validate Tenant email for Rental") and 10633
     (its Move-In Date is the lease date), for both storefront rental flows.
     Confirmed live: the rental sends "<property> Rental Confirmation"
@@ -44,12 +45,22 @@ def assert_rental_confirmation_emails(
     Date: Sep 13, 2026", each charge and "Total Cost To Move-In $ 112.40";
     with autopay, "<property> Auto Payment Confirmation" arrives too.
 
+    When ``charges`` is passed and ``[validation] validate_cost_line_items``
+    is true, every label/amount is asserted in the email body too. By
+    default only Total Cost To Move-In (already in ``expected`` below) is
+    required.
+
+    Returns the Rental Confirmation plain-text body for three-way cost compare
+    (MP confirmation page | email | lease agreement).
+
     Two-Step (get_access_baseline = the inbox's newest message time taken
     just before Get Access): the rental sends two Rental Confirmations, one
     per step. The oldest - Pay Now's - gets the checks above; the one after
     Get Access is checked when it arrives within TWO_STEP_SECOND_EMAIL_WAIT
     seconds. Stage sent none in 27 minutes on 2026-09-15, so a missing one
     is noted in the report rather than failed."""
+    from common_utils.mp_lease_costs import assert_cost_line_items
+
     if get_access_baseline is None:
         message = wait_for_email(guest["email"], subject_contains="Rental Confirmation")
     else:
@@ -79,6 +90,10 @@ def assert_rental_confirmation_emails(
     assert not missing, (
         f"Rental Confirmation email is missing {missing}. Text: {body[:800]}"
     )
+    if charges:
+        assert_cost_line_items(
+            body, charges, total=amount_paid, source="Rental Confirmation email"
+        )
     if get_access_baseline is not None:
         _check_get_access_rental_email(
             context, confirmation_dir, guest, space_number, message["id"], get_access_baseline
@@ -91,6 +106,7 @@ def assert_rental_confirmation_emails(
             confirmation_dir / f"autopay-email-{space_number}.png",
             allure_name=f"autopay-email-{space_number}",
         )
+    return body
 
 
 def _check_get_access_rental_email(

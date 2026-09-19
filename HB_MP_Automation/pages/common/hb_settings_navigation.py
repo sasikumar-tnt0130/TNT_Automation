@@ -20,33 +20,13 @@ class HBSettingsNavigation:
         self.page = page
         self.timeout = timeout
         self.property_name: str | None = None
-        # Set by callers after a real Website-settings Save; clear_cache()
-        # no-ops unless this is True (or force=True).
-        self._website_cache_clear_pending: bool = False
 
     @log_method_exceptions
-    def mark_website_cache_clear_pending(self) -> None:
-        """Record that Website settings changed and the storefront cache
-        needs a Clear Cache before the next storefront read.
-
-        No Allure step here — callers already step the Save; clear_cache()
-        reports whether the flush ran or was skipped."""
-        self._website_cache_clear_pending = True
-
-    @log_method_exceptions
-    def clear_cache(self, *, force: bool = False) -> None:
-        """Flush Website Clear Cache when a clear is pending, or when
-        `force=True` (Two-Step retry / recovery paths that must clear
-        even with no local Save in this session)."""
-        if not force and not self._website_cache_clear_pending:
-            with allure.step("Skip Clear Cache (nothing pending)"):
-                return
-        reason = (
-            "forced recovery"
-            if force
-            else "settings changed"
-        )
-        with allure.step(f"Clear website cache ({reason})"):
+    def clear_cache(self) -> None:
+        """Click Website → Clear Cache. Call once after admin Saves
+        (e.g. ``LeaseConfigurationSetup.flush_website_cache``), not from
+        individual page Save methods."""
+        with allure.step("Clear website cache"):
             self.open_settings_panel()
             clear_cache_link = self.page.get_by_text("Clear Cache", exact=True)
             if not clear_cache_link.is_visible():
@@ -96,19 +76,15 @@ class HBSettingsNavigation:
             # FMS Initial Setup's Two-Step toggle reading Clickwrap/
             # Super Lease from before this clear - see
             # LeaseConfigurationSetup.
-            # enable_two_step_clickwrap_and_super_lease's own caching
-            # comments) - callers that can verify a specific downstream
-            # effect (e.g. MPFMSInitialSetupPage.set_two_step) retry
-            # clear_cache(force=True) themselves against that real signal,
-            # rather than this generic method (shared by layout settings
-            # too, which have no such signal to check) always clicking
-            # multiple times whether or not it was actually needed.
+            # enable_two_step_clickwrap_and_super_lease). Callers that can
+            # verify a specific downstream effect retry flush_website_cache
+            # against that real signal rather than this method always
+            # clicking multiple times.
             try:
                 expect(success_message).to_be_visible(timeout=waits().medium)
             except AssertionError:
                 if not (warm_failed.count() > 0 and warm_failed.first.is_visible()):
                     expect(success_message).to_be_visible(timeout=self.timeout)
-            self._website_cache_clear_pending = False
 
     @log_method_exceptions
     def _dismiss_blocking_dialog(self) -> None:
@@ -310,13 +286,32 @@ class HBSettingsNavigation:
     @log_method_exceptions
     def select_property(self, property_name: str) -> None:
         with allure.step(f"Select property: {property_name}"):
+            # Do not call _dismiss_blocking_dialog() here: Settings itself is
+            # a ``v-dialog__content--active``, so Escape closes the whole
+            # panel and "Select Property" disappears (live 2026-09-18
+            # payment_gateways / clickwrap ACH).
             self.property_name = property_name
             property_select = self.page.get_by_role(
                 "textbox", name="Select Property", exact=True
             )
+            expect(property_select).to_be_visible(timeout=self.timeout)
             property_select.click()
-            property_option = self.page.get_by_text(
-                re.compile(rf".*{re.escape(property_name)}.*", re.IGNORECASE)
-            ).last
-            expect(property_option).to_be_visible(timeout=self.timeout)
-            property_option.click()
+            # Scope to the open listbox. Page-wide get_by_text(...).last can
+            # match the always-visible HB dashboard title
+            # ("Storage Outlet - Bellflower Dashboard"), so expect() never
+            # waits for the real option (live 2026-09-18 uat_storoutlet /
+            # legacy_superlease_signing → Two-Step never disabled).
+            listbox = property_select.locator(
+                "xpath=following::*[@role='listbox'][1]"
+            )
+            expect(listbox).to_be_visible(timeout=self.timeout)
+            name_re = re.compile(
+                rf".*{re.escape(property_name)}.*", re.IGNORECASE
+            )
+            property_option = listbox.get_by_role("option").filter(
+                has_text=name_re
+            )
+            if property_option.count() == 0:
+                property_option = listbox.get_by_text(name_re)
+            expect(property_option.first).to_be_visible(timeout=self.timeout)
+            property_option.first.click()

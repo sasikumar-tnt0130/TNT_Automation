@@ -111,20 +111,28 @@ class HBTenantDocumentsPage:
     @log_method_exceptions
     def open_documents_menu(self) -> None:
         with allure.step("Open documents in the tenant sidebar"):
-            sidebar_toggle = self.page.locator(
-                'button[name="QA-HbHeader-HbIcon-mdi-table-actions-custom-1"]'
-            )
-            expect(sidebar_toggle).to_be_visible(timeout=self.timeout)
-            sidebar_toggle.click()
-            # Confirmed live: this sidebar's items render as plain <li>
-            # inside a "listbox" container rather than proper ARIA
-            # "option" children, so Playwright's role query for
-            # "listitem" doesn't reliably match them even though a
-            # debug accessibility dump shows "listitem: Documents" -
-            # matching by its own text is what actually works.
-            documents_link = self.page.get_by_text("Documents", exact=True)
-            expect(documents_link).to_be_visible(timeout=self.timeout)
-            documents_link.click()
+            # Prefer direct URL (same pattern as Gate Access). Sidebar
+            # "Documents" often goes unstable/not-visible after tenant
+            # validation scroll (stage 2026-09-19) while the href is already
+            # /contacts/<id>/files.
+            contact = re.search(r"/contacts/([^/?#]+)", self.page.url)
+            if contact:
+                origin = re.match(r"https?://[^/]+", self.page.url).group(0)
+                self.page.goto(
+                    f"{origin}/contacts/{contact.group(1)}/files",
+                    wait_until="domcontentloaded",
+                )
+            else:
+                sidebar_toggle = self.page.locator(
+                    'button[name="QA-HbHeader-HbIcon-mdi-table-actions-custom-1"]'
+                )
+                expect(sidebar_toggle).to_be_visible(timeout=self.timeout)
+                sidebar_toggle.click()
+                documents_link = self.page.locator(
+                    "a[href*='/files']"
+                ).filter(has_text=re.compile(r"^\s*Documents\s*$"))
+                expect(documents_link.first).to_be_visible(timeout=self.timeout)
+                documents_link.first.click(force=True)
             expect(
                 self.page.get_by_role("button", name="Upload File", exact=True)
             ).to_be_visible(timeout=self.timeout)
@@ -188,12 +196,86 @@ class HBTenantDocumentsPage:
         ).first
 
     @log_method_exceptions
-    def open_document_pdf_text(self, document_name: str) -> str:
+    def open_document_pdf_text(
+        self, document_name: str, space_number: str | None = None
+    ) -> str:
         """Row kebab -> View/Print opens a CloudFront PDF in a new tab
-        (walked live 2026-09-16 stage). Fetches the PDF bytes and returns
-        extracted text via pypdf."""
-        from pypdf import PdfReader
+        (walked live 2026-09-16 stage). Captures PDF bytes (network / browser
+        fetch / retried API get), attaches to Allure, returns pypdf text.
+
+        ``space_number`` scopes the lease space-card screenshot to that unit.
+        """
         from io import BytesIO
+        from pathlib import Path
+
+        from pypdf import PdfReader
+
+        from common_utils.wrapper_methods import confirmation_dir_for_current_test
+
+        def _looks_like_pdf_response(response) -> bool:
+            try:
+                if response.status != 200:
+                    return False
+                ctype = (response.headers.get("content-type") or "").lower()
+                if "application/pdf" in ctype:
+                    return True
+                url = (response.url or "").lower()
+                return any(
+                    token in url
+                    for token in ("cloudfront.net", "pandadoc", "superlease", ".pdf")
+                )
+            except Exception:
+                return False
+
+        def _bytes_from_response(response) -> bytes | None:
+            try:
+                raw = response.body()
+            except Exception:
+                return None
+            return raw if raw and raw[:4] == b"%PDF" else None
+
+        def _fetch_via_browser(page, url: str) -> bytes | None:
+            try:
+                data = page.evaluate(
+                    """async (url) => {
+                        const r = await fetch(url, { credentials: 'include' });
+                        if (!r.ok) throw new Error('HTTP ' + r.status);
+                        return Array.from(new Uint8Array(await r.arrayBuffer()));
+                    }""",
+                    url,
+                )
+                raw = bytes(data)
+                return raw if raw[:4] == b"%PDF" else None
+            except Exception as exc:
+                allure.attach(
+                    f"{type(exc).__name__}: {exc}"[:800],
+                    name=f"{document_name} browser fetch failed",
+                    attachment_type=allure.attachment_type.TEXT,
+                )
+                return None
+
+        def _fetch_via_api(url: str) -> bytes | None:
+            last_error: Exception | None = None
+            for attempt in range(1, 4):
+                try:
+                    response = self.page.context.request.get(url, timeout=60_000)
+                    if response.status != 200:
+                        last_error = AssertionError(f"HTTP {response.status}")
+                        continue
+                    raw = response.body()
+                    if raw[:4] == b"%PDF":
+                        return raw
+                    last_error = AssertionError(f"not a PDF ({raw[:20]!r})")
+                except Exception as exc:
+                    last_error = exc
+                    self.page.wait_for_timeout(waits().short)
+            if last_error is not None:
+                allure.attach(
+                    f"{type(last_error).__name__}: {last_error}"[:800],
+                    name=f"{document_name} API fetch failed",
+                    attachment_type=allure.attachment_type.TEXT,
+                )
+            return None
 
         with allure.step(f"View or print document PDF: {document_name}"):
             row = self.document_row(document_name)
@@ -201,14 +283,23 @@ class HBTenantDocumentsPage:
             row.locator(".mdi-dots-vertical").first.click()
             view = self.page.get_by_role("menuitem", name="View/Print", exact=True)
             expect(view).to_be_visible(timeout=self.timeout)
-            with self.page.context.expect_page() as new_page_info:
-                view.click()
-            pdf_page = new_page_info.value
+
+            captured: list[bytes] = []
+
+            def _on_response(response) -> None:
+                if not _looks_like_pdf_response(response):
+                    return
+                raw = _bytes_from_response(response)
+                if raw is not None:
+                    captured.append(raw)
+
+            self.page.context.on("response", _on_response)
+            pdf_page = None
             try:
+                with self.page.context.expect_page() as new_page_info:
+                    view.click()
+                pdf_page = new_page_info.value
                 pdf_page.wait_for_load_state("domcontentloaded")
-                # CloudFront sometimes lands on chrome-error: before the real
-                # PDF URL; wait for http(s) or fail with AssertionError so
-                # callers can soft-assert.
                 deadline = self.timeout
                 waited = 0
                 while waited < deadline and not (
@@ -225,36 +316,74 @@ class HBTenantDocumentsPage:
                         f"PDF tab for {document_name!r} never reached an "
                         f"http(s) URL (got {pdf_page.url!r})"
                     )
-                response = self.page.context.request.get(pdf_page.url)
-                if response.status != 200:
+
+                # Let late CloudFront responses settle into the listener.
+                for _ in range(10):
+                    if captured:
+                        break
+                    pdf_page.wait_for_timeout(300)
+
+                body = captured[-1] if captured else None
+                if body is None:
+                    body = _fetch_via_browser(pdf_page, pdf_page.url)
+                if body is None:
+                    body = _fetch_via_api(pdf_page.url)
+                if body is None:
                     raise AssertionError(
-                        f"PDF fetch for {document_name!r} returned HTTP {response.status}"
+                        f"Could not download PDF bytes for {document_name!r} "
+                        f"from {pdf_page.url!r} (network capture, browser "
+                        f"fetch, and API get all failed)"
                     )
-                body = response.body()
+
+                safe = re.sub(r"[^\w.-]+", "_", document_name).strip("_") or "lease"
+                reports_dir = Path(__file__).resolve().parents[2] / "reports"
+                pdf_path = (
+                    confirmation_dir_for_current_test(reports_dir) / f"{safe}.pdf"
+                )
+                pdf_path.parent.mkdir(parents=True, exist_ok=True)
+                pdf_path.write_bytes(body)
                 allure.attach(
-                    body[:2000],
-                    name=f"{document_name} PDF header bytes",
-                    attachment_type=allure.attachment_type.TEXT,
+                    body,
+                    name=f"{document_name} lease agreement",
+                    attachment_type=allure.attachment_type.PDF,
+                    extension="pdf",
+                )
+                from common_utils.mp_payment_report import (
+                    attach_payment_screenshots_from_pdf,
+                )
+
+                attach_payment_screenshots_from_pdf(
+                    body,
+                    document_name=document_name,
+                    space_number=space_number,
                 )
                 text = "".join(
-                    (page.extract_text() or "")
-                    for page in PdfReader(BytesIO(body)).pages
-                )
-                allure.attach(
-                    text[:4000],
-                    name=f"{document_name} PDF text (sample)",
-                    attachment_type=allure.attachment_type.TEXT,
+                    (pdf_pg.extract_text() or "")
+                    for pdf_pg in PdfReader(BytesIO(body)).pages
                 )
                 return text
             finally:
-                pdf_page.close()
+                try:
+                    self.page.context.remove_listener("response", _on_response)
+                except Exception:
+                    pass
+                if pdf_page is not None:
+                    try:
+                        pdf_page.close()
+                    except Exception:
+                        pass
 
     @log_method_exceptions
     def assert_document_pdf_contains(
-        self, document_name: str, expected_snippets: list[str]
+        self,
+        document_name: str,
+        expected_snippets: list[str],
+        space_number: str | None = None,
     ) -> str:
         """Open the named document and assert each snippet appears in its PDF text."""
-        text = self.open_document_pdf_text(document_name)
+        text = self.open_document_pdf_text(
+            document_name, space_number=space_number
+        )
         lowered = text.lower()
         missing = [
             snippet

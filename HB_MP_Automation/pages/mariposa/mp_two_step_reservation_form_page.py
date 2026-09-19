@@ -12,6 +12,7 @@ from pages.mariposa.mp_rental_payment_form import (
     enter_ach,
     fill_billing_address,
     fill_business_representative,
+    normalize_expiry_digits,
     select_payment_method,
     set_autopay,
     tick_agreement,
@@ -396,58 +397,58 @@ class MPTwoStepReservationFormPage:
         Tax $ 0.00 Total: $52.00 Total Cost to Move-in: $52.00". Only its aria
         snapshot was captured, not its markup, so on a phone that block is
         read from its visible text."""
-        with allure.step("Read the lease summary"):
-            if (self.page.viewport_size or {}).get("width", 1920) < 768:
-                self._wait_for_phone_summary()
-                read_summary = self._phone_summary_snapshot
-            else:
-                summary = first_visible(
-                    self.page.locator(".unit-sidebarwrapper:not(:has(.unit-sidebarwrapper))")
-                )
-                expect(summary.locator(".total .cost").first).to_be_visible(timeout=self.timeout)
-
-                def read_summary() -> dict:
-                    return summary.evaluate(self._SIDEBAR_SUMMARY)
-
-            readings: list[str | None] = []
-            for _ in range(int(self.timeout / 500)):
-                readings.append(read_summary()["total"].strip() or None)
-                if readings[-1] and len(readings) >= 6 and len(set(readings[-6:])) == 1:
-                    break
-                self.page.wait_for_timeout(waits().poll_interval)
-            else:
-                raise AssertionError(f"Lease Summary total never settled: {readings[-8:]}")
-
-            snapshot = read_summary()
-            space = re.search(r"#([^\s|]+)", snapshot["space"])
-            rates = {
-                label: self._money(match.group(1))
-                for label in ("IN-STORE", "WEB RATE")
-                if (match := re.search(rf"{label}\s*(\$\s*[\d,]+(?:\.\d+)?)", snapshot["text"], re.I))
-            }
-            charges = {}
-            for row_text, amount_text in snapshot["charges"]:
-                row_text = re.sub(r"\s+", " ", row_text).strip()
-                amount_text = re.sub(r"\s+", " ", amount_text).strip()
-                charges[row_text.replace(amount_text, "").strip()] = self._money(amount_text)
-            # Confirmed live (2026-09-13, stage/Rutland): a property that signs
-            # the lease before payment ends the form with "Sign Agreements"
-            # instead, with no amount on it - pay_now is None there.
-            action_text = first_visible(
-                self.page.get_by_role("button", name=re.compile(r"Pay Now|Sign Agreements"))
-            ).inner_text()
-            lease_summary = {
-                "space_number": space.group(1) if space else None,
-                "rates": rates,
-                "charges": charges,
-                "total": self._money(snapshot["total"]),
-                "pay_now": self._money(action_text) if "Pay Now" in action_text else None,
-            }
-            allure.attach(
-                repr(lease_summary), name="storefront lease summary",
-                attachment_type=allure.attachment_type.TEXT,
+        # allure.step("Read the lease summary") — omitted from report; still read.
+        if (self.page.viewport_size or {}).get("width", 1920) < 768:
+            self._wait_for_phone_summary()
+            read_summary = self._phone_summary_snapshot
+        else:
+            summary = first_visible(
+                self.page.locator(".unit-sidebarwrapper:not(:has(.unit-sidebarwrapper))")
             )
-            return lease_summary
+            expect(summary.locator(".total .cost").first).to_be_visible(timeout=self.timeout)
+
+            def read_summary() -> dict:
+                return summary.evaluate(self._SIDEBAR_SUMMARY)
+
+        readings: list[str | None] = []
+        for _ in range(int(self.timeout / 500)):
+            readings.append(read_summary()["total"].strip() or None)
+            if readings[-1] and len(readings) >= 6 and len(set(readings[-6:])) == 1:
+                break
+            self.page.wait_for_timeout(waits().poll_interval)
+        else:
+            raise AssertionError(f"Lease Summary total never settled: {readings[-8:]}")
+
+        snapshot = read_summary()
+        space = re.search(r"#([^\s|]+)", snapshot["space"])
+        rates = {
+            label: self._money(match.group(1))
+            for label in ("IN-STORE", "WEB RATE")
+            if (match := re.search(rf"{label}\s*(\$\s*[\d,]+(?:\.\d+)?)", snapshot["text"], re.I))
+        }
+        charges = {}
+        for row_text, amount_text in snapshot["charges"]:
+            row_text = re.sub(r"\s+", " ", row_text).strip()
+            amount_text = re.sub(r"\s+", " ", amount_text).strip()
+            charges[row_text.replace(amount_text, "").strip()] = self._money(amount_text)
+        # Confirmed live (2026-09-13, stage/Rutland): a property that signs
+        # the lease before payment ends the form with "Sign Agreements"
+        # instead, with no amount on it - pay_now is None there.
+        action_text = first_visible(
+            self.page.get_by_role("button", name=re.compile(r"Pay Now|Sign Agreements"))
+        ).inner_text()
+        lease_summary = {
+            "space_number": space.group(1) if space else None,
+            "rates": rates,
+            "charges": charges,
+            "total": self._money(snapshot["total"]),
+            "pay_now": self._money(action_text) if "Pay Now" in action_text else None,
+        }
+        # allure.attach(
+        #     repr(lease_summary), name="storefront lease summary",
+        #     attachment_type=allure.attachment_type.TEXT,
+        # )
+        return lease_summary
 
     @log_method_exceptions
     def pay_rental_by_card(
@@ -486,7 +487,7 @@ class MPTwoStepReservationFormPage:
             hosted_number = self.page.locator('iframe[name="card-number"]')
             plain_number = self.page.locator("#creditCardNumber")
             expect(hosted_number.or_(plain_number).first).to_be_visible(timeout=self.timeout)
-            expiry_digits = re.sub(r"\D", "", card_expiry)
+            expiry_digits = normalize_expiry_digits(card_expiry)
             if hosted_number.count() > 0:
                 card_fields = [
                     self.page.frame_locator(f'iframe[name="{frame_name}"]').locator("input").first

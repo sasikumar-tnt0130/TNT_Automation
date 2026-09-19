@@ -165,10 +165,5 @@ class MPNameAndAddressInfoPage:
             # Confirmed live: the storefront (MP) can keep serving a
             # property's previous phone number for some time after a save
             # here, even though HB itself reflects the new value
-            # immediately on read-back - same cache layer
-            # MPFMSInitialSetupPage.set_landing_page_layout clears after its
-            # own save. Without this, a test that saves then immediately
-            # checks the storefront can see stale data and fail for a
-            # caching reason unrelated to what it's actually testing.
-            self.nav.mark_website_cache_clear_pending()
-            self.nav.clear_cache()
+            # immediately on read-back. Callers flush once via
+            # nav.clear_cache / flush_website_cache after all Saves.

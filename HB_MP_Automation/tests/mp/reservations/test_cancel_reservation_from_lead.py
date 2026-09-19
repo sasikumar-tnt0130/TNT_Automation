@@ -1,6 +1,7 @@
 from datetime import date, timedelta
 
 import allure
+import pytest
 
 from common_utils.mp_two_step_reservation_setup import MPTwoStepReservationSetup
 from pages.common.hb_lead_management_page import HBLeadManagementPage
@@ -9,6 +10,7 @@ from pages.common.hb_lead_management_page import HBLeadManagementPage
 @allure.title("A storefront reservation can be cancelled from its lead in HB")
 @allure.feature("MP Reservations and Rentals")
 @allure.story("Reserve a Space in Mariposa + Retire a Lead From HummingBird")
+@pytest.mark.usefixtures("two_step_superlease_checked")
 def test_cancel_storefront_reservation_from_lead(
     page,
     environment_config,
@@ -16,7 +18,7 @@ def test_cancel_storefront_reservation_from_lead(
     mp_guest,
     two_step_property,
     property_landing_page_url,
-    hb_login_page,
+    hb_admin_session,
 ) -> None:
     # Old Robot Mariposa ReservationAndRentals: "Reserve a Space in
     # Mariposa" + "Retire a Lead From HummingBird". HB no longer retires a
@@ -39,10 +41,8 @@ def test_cancel_storefront_reservation_from_lead(
         reservation_code = reservation.reserve_unit(mp_guest, renting_as_business=False)
 
     with allure.step("HB lists the reservation as a web reservation lead"):
-        if hb_login_page.open_login_page():
-            hb_login_page.submit_login_credentials()
-        hb_login_page.assert_login_successful()
-        leads = HBLeadManagementPage(page, timeout)
+        hb_admin_session.ensure_logged_in()
+        leads = HBLeadManagementPage(hb_admin_session.page, timeout)
         leads.open_leads(two_step_property.hb_property_name)
         leads.assert_web_reservation_lead(
             mp_guest["email"], reservation_code, date.today() + timedelta(days=1)

@@ -20,8 +20,11 @@ from common_utils.browser_sessions import (
     capture_page_failure_artifacts,
     chromium_launch_args,
     close_context_with_videos,
+    create_hb_admin_session,
     desktop_context_options,
     desktop_viewport,
+    ensure_hb_admin_page_ready,
+    finalize_hb_admin_session_video_for_test,
     maybe_start_tracing,
     prepare_desktop_page,
     reset_video_attach_state_for_test,
@@ -396,7 +399,18 @@ def browser(playwright: Playwright, app_config) -> Generator[Browser, None, None
     )
     yield browser_instance
     logger.info("Closing session %s", browser_name)
-    browser_instance.close()
+    # Close leftover contexts first — headed Chromium + CDP maximize
+    # sessions otherwise leave browser.close() wedged on Windows.
+    for context in list(browser_instance.contexts):
+        try:
+            context.close()
+        except Exception as exc:
+            logger.debug("Leftover context close skipped: %s", exc)
+    try:
+        browser_instance.close()
+    except Exception as exc:
+        logger.warning("browser.close failed: %s", exc)
+    logger.info("Session %s closed", browser_name)
 
 
 def _browser_permissions(app_config) -> list[str]:
@@ -416,9 +430,10 @@ def property_landing_page_url(
     MPUnitSearchPage.search_storage_location() uses and cached per
     (mp_base_url, state, city) for the rest of the session.
 
-    Reuses one Chromium context for all discoveries in the session
-    (same session browser as everything else) instead of
-    open/close-per-lookup.
+    Reuses the caller's page when ``page=`` is passed (rental runner /
+    legacy verify). Only opens a session discovery context when no page
+    is provided — that path is what used to leave a persistent third
+    Chromium window open for the whole session.
     """
     timeout = app_config.getint("browser", "timeout")
     cache: dict[tuple[str, str, str], str] = {}
@@ -432,8 +447,8 @@ def property_landing_page_url(
         key = (mp_base_url, state, city)
         if key in cache:
             return cache[key]
-        # Prefer the caller's page (rental_case_runner) so we do not open a
-        # third Chromium context just to resolve the landing URL.
+        # Prefer the caller's page (rental_case_runner / legacy verify) so we
+        # do not open a third Chromium context just to resolve the landing URL.
         if page is not None:
             rental_page = MPUnitSearchPage(page, mp_base_url, timeout)
             rental_page.open_storefront()
@@ -500,6 +515,55 @@ def page(browser: Browser, app_config, request) -> Generator[Page, None, None]:
 def test_data(environment: str) -> Callable[[str], dict]:
     """test_data("move_out") -> dict from config/test_data/move_out.json."""
     return lambda feature: load_test_data(feature, environment)
+
+
+@pytest.fixture(scope="module")
+def hb_admin_session(
+    browser: Browser, environment_config: EnvironmentConfig, app_config
+) -> Generator[HBLoginPage, None, None]:
+    """One logged-in HB admin tab for the module (settings / FMS / lease).
+
+    Desktop rental cases reuse this same tab for the Mariposa storefront
+    (URL switch) so Playwright records one continuous execution-video.
+    """
+    context, hb_login_page = create_hb_admin_session(
+        browser, environment_config, app_config, record_video=None
+    )
+    try:
+        yield hb_login_page
+    finally:
+        # Leftover tab after the last test's video finalize — do not attach
+        # as execution-video (that was the short “HB launch and close” clip).
+        close_context_with_videos(
+            context, app_config, name="hb-session-leftover"
+        )
+
+
+@pytest.fixture(autouse=True)
+def _shared_tab_execution_video_on_test(request: pytest.FixtureRequest, app_config):
+    """One execution-video per test on the shared HB/storefront tab.
+
+    Teardown closes the tab to finalize the .webm (no HB reopen — that
+    created a second short video after the test). Setup reopens the tab
+    only when the next test needs ``hb_admin_session``.
+    """
+    if "hb_admin_session" in request.fixturenames:
+        try:
+            ensure_hb_admin_page_ready(
+                request.getfixturevalue("hb_admin_session"), app_config
+            )
+        except Exception:
+            pass
+    yield
+    if "hb_admin_session" not in request.fixturenames:
+        return
+    try:
+        hb_login_page = request.getfixturevalue("hb_admin_session")
+    except Exception:
+        return
+    finalize_hb_admin_session_video_for_test(
+        hb_login_page, app_config, name="execution-video"
+    )
 
 
 @pytest.fixture

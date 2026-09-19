@@ -6,7 +6,8 @@ from common_utils.mp_rental_cases import RentalCase
 # The RAB (renting as a business) half of the user's "2Step Flow-Superlease
 # Signing" scenarios (2026-09-14: RAB on every case) - see
 # test_two_step_individual.py. HB lists a business renter as "<name>
-# Business".
+# Business". Module fixture ``two_step_superlease_checked`` enables
+# Two-Step + Super Lease + Clickwrap and flushes website cache.
 
 
 @allure.feature("MP Rentals")

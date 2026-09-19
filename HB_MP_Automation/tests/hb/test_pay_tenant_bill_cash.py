@@ -49,6 +49,8 @@ def test_pay_tenant_bill_with_cash(
             property_name=rutland.lease_configuration_property_name,
             fms_property_name=rutland.fms_property_name,
         ).disable_two_step_clickwrap_and_super_lease()
+        # HB cash-pay path does not need storefront Clear Cache; settings
+        # are only forced off so Quick Launch Traditional Signing works.
 
         # Confirmed live: the Settings/FMS panel used above doesn't close its
         # own dialog afterward - its leftover overlay intercepts clicks on

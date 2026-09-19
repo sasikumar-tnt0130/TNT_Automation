@@ -42,7 +42,7 @@ class TestMultipleSpacesRab:
         app_config,
         mp_guest,
         property_landing_page_url,
-        hb_login_page,
+        hb_admin_session,
         test_data,
         move_out_after_rental,
     ) -> None:
@@ -92,10 +92,8 @@ class TestMultipleSpacesRab:
                 )
                 spaces.append(rental2["space_number"])
 
-            if hb_login_page.open_login_page():
-                hb_login_page.submit_login_credentials()
-            hb_login_page.assert_login_successful()
-            tenants = HBTenantSpacesPage(hb_login_page.page, timeout)
+            hb_admin_session.ensure_logged_in()
+            tenants = HBTenantSpacesPage(hb_admin_session.page, timeout)
             tenants.open_tenants(prop.hb_property_name)
 
             with allure.step("C64723: one tenant contact holds both spaces"):
@@ -106,12 +104,12 @@ class TestMultipleSpacesRab:
                 # contact that also lists the first space (live 2026-09-16).
                 tenants.open_tenants(prop.hb_property_name)
                 tenants.open_storefront_tenant(business_name, spaces[-1])
-                expect(hb_login_page.page.locator("body")).to_contain_text(
+                expect(hb_admin_session.page.locator("body")).to_contain_text(
                     business_name
                 )
                 for space_number in spaces:
                     expect(
-                        hb_login_page.page.get_by_text(
+                        hb_admin_session.page.get_by_text(
                             f"Space {space_number}", exact=True
                         ).first
                     ).to_be_visible(timeout=timeout)
@@ -130,7 +128,7 @@ class TestMultipleSpacesRab:
             for space_number in spaces:
                 try:
                     move_out_rental(
-                        hb_login_page,
+                        hb_admin_session,
                         timeout,
                         prop.hb_property_name,
                         guest_name,
