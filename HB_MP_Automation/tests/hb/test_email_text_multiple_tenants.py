@@ -1,5 +1,6 @@
 import allure
 
+from common_utils.email_providers import is_test_inbox_email
 from pages.common.hb_tenant_bulk_actions_page import HBTenantBulkActionsPage
 
 
@@ -38,7 +39,7 @@ def test_email_text_multiple_tenants(
     bulk_actions.close_bulk_actions()
 
     # Email really is sent - but only once every recipient is confirmed to be
-    # a disposable Mailinator inbox.
+    # the Gmail test inbox.
     selected = bulk_actions.select_all_tenants()
     bulk_actions.start_communication("Send Email")
     bulk_actions.compose_email(
@@ -47,7 +48,7 @@ def test_email_text_multiple_tenants(
     )
     email_recipients, emails = bulk_actions.review_recipients()
     assert email_recipients == selected
-    assert emails and all(email.endswith("@mailinator.com") for email in emails), (
-        f"Refusing to send: not every recipient is a Mailinator inbox: {emails}"
+    assert emails and all(is_test_inbox_email(email) for email in emails), (
+        f"Refusing to send: not every recipient is a test inbox: {emails}"
     )
     bulk_actions.confirm_and_send()

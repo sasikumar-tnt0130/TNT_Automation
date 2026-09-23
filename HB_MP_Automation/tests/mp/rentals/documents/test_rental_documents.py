@@ -238,7 +238,10 @@ def _for_each_space_type(
 
 @allure.feature("MP Rentals")
 @allure.story("Rental documents")
-@pytest.mark.usefixtures("legacy_traditional_signing")
+@pytest.mark.usefixtures(
+    "ensure_autotest_document_templates",
+    "legacy_traditional_signing",
+)
 class TestRentalDocuments:
     @allure.title("Rentals with HB-Lease Agreement generated for every space type")
     @pytest.mark.smoke

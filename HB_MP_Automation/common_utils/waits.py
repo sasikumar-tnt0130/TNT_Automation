@@ -1,20 +1,27 @@
 """Named waits for the page objects, in milliseconds, from
-config/environments.ini's [waits] section: short (a control settling - a
-checkbox ticking, a dialog closing), medium (a section or grid loading), long
-(a slow one-off screen, e.g. signing or a document generating) and
-poll_interval (the pause inside a polling loop).
+config/environments.ini's [waits] section.
 
-[browser] timeout stays the overall wait, and everything derived from it
-(self.timeout / 2, / 500 ...) still follows it. These name the shorter roles
-that were repeated as literals across the page objects, so they're tuned in
-one place. Read once per session; the defaults match the values the code used
-before, so a missing [waits] section changes nothing."""
+Two budgets (do not mix them up):
+
+* **settle_*** — blind ``wait_for_timeout`` pauses after a click/toggle/cache
+  flush. Keep these small; the UI should finish sooner and callers that need
+  a condition should use ``expect`` instead.
+* **tiny / short / medium / long / extra_long** — ceilings for ``expect``,
+  ``click(timeout=...)``, ``goto``, etc. High values only matter on failure
+  (or when the UI is genuinely slow); they do not add time on the happy path.
+* **poll_interval** — pause inside a polling loop.
+
+[browser] timeout stays the overall default. Read once per session.
+"""
 from dataclasses import dataclass
 from functools import lru_cache
 
 
 @dataclass(frozen=True)
 class Waits:
+    settle_tiny: int
+    settle_short: int
+    settle_medium: int
     tiny: int
     short: int
     medium: int
@@ -34,6 +41,9 @@ def waits() -> Waits:
     # key raises configparser's own error naming the section and key rather
     # than silently using a stale default copied into this file.
     return Waits(
+        settle_tiny=config.getint("waits", "settle_tiny_ms"),
+        settle_short=config.getint("waits", "settle_short_ms"),
+        settle_medium=config.getint("waits", "settle_medium_ms"),
         tiny=config.getint("waits", "tiny_ms"),
         short=config.getint("waits", "short_ms"),
         medium=config.getint("waits", "medium_ms"),

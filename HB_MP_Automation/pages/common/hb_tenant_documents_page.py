@@ -122,20 +122,43 @@ class HBTenantDocumentsPage:
                     f"{origin}/contacts/{contact.group(1)}/files",
                     wait_until="domcontentloaded",
                 )
-            else:
+            upload = self.page.get_by_role("button", name="Upload File", exact=True)
+            try:
+                expect(upload).to_be_visible(timeout=waits().medium)
+            except AssertionError:
+                # Sidebar listitem / href fallback when URL had no contact id
+                # or /files did not land on the documents grid.
                 sidebar_toggle = self.page.locator(
                     'button[name="QA-HbHeader-HbIcon-mdi-table-actions-custom-1"]'
                 )
-                expect(sidebar_toggle).to_be_visible(timeout=self.timeout)
-                sidebar_toggle.click()
+                if sidebar_toggle.count() and sidebar_toggle.first.is_visible():
+                    sidebar_toggle.first.click()
                 documents_link = self.page.locator(
                     "a[href*='/files']"
                 ).filter(has_text=re.compile(r"^\s*Documents\s*$"))
-                expect(documents_link.first).to_be_visible(timeout=self.timeout)
-                documents_link.first.click(force=True)
-            expect(
-                self.page.get_by_role("button", name="Upload File", exact=True)
-            ).to_be_visible(timeout=self.timeout)
+                if documents_link.count():
+                    expect(documents_link.first).to_be_visible(timeout=self.timeout)
+                    documents_link.first.click(force=True)
+                else:
+                    self.page.get_by_role(
+                        "listitem", name=re.compile(r"^\s*Documents\s*$")
+                    ).first.click(force=True)
+                expect(upload).to_be_visible(timeout=self.timeout)
+
+    @log_method_exceptions
+    def resolve_lease_document_name(self) -> str:
+        """Superlease when present; otherwise Lease Agreement (clickwrap /
+        traditional signing). Documents panel must already be open."""
+        for name in ("Superlease", "Lease Agreement"):
+            row = self.document_row(name)
+            try:
+                expect(row).to_be_visible(timeout=waits().short)
+                return name
+            except AssertionError:
+                continue
+        raise AssertionError(
+            "Neither Superlease nor Lease Agreement found in tenant Documents"
+        )
 
     @log_method_exceptions
     def upload_file(self, file_path: str) -> None:
@@ -268,7 +291,7 @@ class HBTenantDocumentsPage:
                     last_error = AssertionError(f"not a PDF ({raw[:20]!r})")
                 except Exception as exc:
                     last_error = exc
-                    self.page.wait_for_timeout(waits().short)
+                    self.page.wait_for_timeout(waits().settle_short)
             if last_error is not None:
                 allure.attach(
                     f"{type(last_error).__name__}: {last_error}"[:800],
@@ -277,7 +300,10 @@ class HBTenantDocumentsPage:
                 )
             return None
 
-        with allure.step(f"View or print document PDF: {document_name}"):
+        with allure.step(
+            f"View or print document PDF: {document_name}"
+            + (f" #{space_number}" if space_number else "")
+        ):
             row = self.document_row(document_name)
             expect(row).to_be_visible(timeout=self.timeout)
             row.locator(".mdi-dots-vertical").first.click()
@@ -336,15 +362,21 @@ class HBTenantDocumentsPage:
                     )
 
                 safe = re.sub(r"[^\w.-]+", "_", document_name).strip("_") or "lease"
+                if space_number:
+                    safe = f"{safe}_{re.sub(r'^#', '', str(space_number).strip())}"
                 reports_dir = Path(__file__).resolve().parents[2] / "reports"
                 pdf_path = (
                     confirmation_dir_for_current_test(reports_dir) / f"{safe}.pdf"
                 )
                 pdf_path.parent.mkdir(parents=True, exist_ok=True)
                 pdf_path.write_bytes(body)
+                attach_name = document_name
+                if space_number:
+                    space = re.sub(r"^#", "", str(space_number).strip())
+                    attach_name = f"{document_name} #{space}"
                 allure.attach(
                     body,
-                    name=f"{document_name} lease agreement",
+                    name=attach_name,
                     attachment_type=allure.attachment_type.PDF,
                     extension="pdf",
                 )

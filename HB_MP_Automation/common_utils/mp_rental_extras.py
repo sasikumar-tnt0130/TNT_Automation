@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import uuid
 
+from common_utils.email_providers import test_inbox_address
+
 
 def letter_suffix(raw: str) -> str:
     return "".join("abcdefghij"[int(ch)] if ch.isdigit() else ch for ch in raw)
@@ -18,7 +20,7 @@ def _contact(prefix: str, rental_data: dict) -> dict:
     return {
         "first_name": prefix,
         "last_name": f"Contact{suffix}",
-        "email": f"{prefix.lower()}-{suffix}@mailinator.com",
+        "email": test_inbox_address(f"{prefix.lower()}-{suffix}"),
         "phone": f"(714) 555-01{int(uuid.uuid4().hex[:2], 16) % 100:02d}",
         "address1": rental_data["address1"],
         "address2": rental_data.get("address2", ""),
@@ -58,7 +60,7 @@ def rental_extras(
         extras["lien_holder"] = {
             "first_name": "Lien",
             "last_name": f"Bank{suffix}",
-            "email": f"lien-{suffix}@mailinator.com",
+            "email": test_inbox_address(f"lien-{suffix}"),
             "phone": "(714) 555-0177",
             "address1": rental_data["address1"],
             "address2": rental_data.get("address2", ""),

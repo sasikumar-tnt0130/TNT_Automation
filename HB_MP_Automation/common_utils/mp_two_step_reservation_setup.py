@@ -3,14 +3,18 @@ from configparser import ConfigParser
 from datetime import date
 from pathlib import Path
 
+import allure
 from playwright.sync_api import Page, expect
 
-from common_utils.mailinator_utils import (
+from common_utils.email_utils import (
     find_email_link,
     get_email_plain_text,
     get_email_text,
     latest_email_time,
+    message_contains,
+    snapshot_inbox_ids,
     wait_for_email,
+    wait_for_email_where,
 )
 from common_utils.mp_rental_emails import assert_rental_confirmation_emails
 from common_utils.wrapper_methods import (
@@ -88,6 +92,8 @@ class MPTwoStepReservationSetup:
         self.move_in_date: date | None = None
         # Set by rent_reserved_unit just before Get Access - see there.
         self.get_access_baseline: int | None = None
+        self._inbox_ids_before: set[str] = set()
+        self.last_reservation_code: str | None = None
 
     @log_method_exceptions
     def reserve_unit(
@@ -99,32 +105,13 @@ class MPTwoStepReservationSetup:
         """Search, select a unit, and submit the Two-Step reservation
         form ("Reserve Now"). Returns the reservation code. Sets
         self.move_in_date to the date selected on the form."""
-        if self.property_url:
-            self.rental_page.open_property_page(self.property_url)
-        else:
-            self.rental_page.open_storefront()
-            if self.mp_state and self.mp_city:
-                self.rental_page.search_storage_location(
-                    state=self.mp_state, city=self.mp_city
-                )
-            else:
-                self.rental_page.select_first_available_location()
-        self.rental_page.select_unit()
-
         business_name = (
             f"{guest['first_name']} {guest['last_name']} Business"
             if renting_as_business
             else None
         )
-        flow = self.rental_page.wait_for_reservation_flow()
-        if flow != "two_step":
-            raise AssertionError(
-                "Storefront served the Legacy flow (\"Reserve This "
-                "Space\") instead of Two-Step (\"Reserve Now\") for this "
-                "session, even though this suite configures the "
-                "property for Two-Step - a known intermittent "
-                "storefront-side routing issue, not a config problem."
-            )
+        self._inbox_ids_before = snapshot_inbox_ids(guest["email"])
+        self._open_unit_form()
         self.move_in_date = self.two_step_page.reserve_unit(
             email=guest["email"],
             mobile=guest["mobile"],
@@ -135,6 +122,7 @@ class MPTwoStepReservationSetup:
             days_from_today=days_from_today,
         )
         reservation_code = self.two_step_page.get_reservation_code()
+        self.last_reservation_code = reservation_code
         save_confirmation_screenshot(
             self.two_step_page.page,
             self.confirmation_dir / f"reservation-{reservation_code}.png",
@@ -152,7 +140,12 @@ class MPTwoStepReservationSetup:
     ) -> float | None:
         """Same check as MPLegacyReservationSetup.assert_confirmation_email.
         Optionally asserts the move-in date. Returns email Web Rental Rate."""
-        message = wait_for_email(guest["email"], subject_contains="Reservation Confirmation")
+        message = wait_for_email_where(
+            guest["email"],
+            "Reservation Confirmation",
+            matches=lambda message, code=reservation_code: message_contains(message, code),
+            ignore_ids=self._inbox_ids_before,
+        )
         body = get_email_text(message)
         plain = get_email_plain_text(message)
         save_email_screenshot(
@@ -216,9 +209,157 @@ class MPTwoStepReservationSetup:
         /rent/<space type>/v1/?reservationId=... form) - returns that
         page's Lease Summary. Nothing is submitted; Pay Now is never
         clicked."""
-        message = wait_for_email(guest["email"], subject_contains="Reservation Confirmation")
+        code = self.last_reservation_code
+
+        def _this_reservation(message: dict, code: str | None = code) -> bool:
+            if not message_contains(message, "Rent Now"):
+                return False
+            return message_contains(message, code) if code else True
+
+        message = wait_for_email_where(
+            guest["email"],
+            "Reservation Confirmation",
+            matches=_this_reservation,
+            ignore_ids=self._inbox_ids_before,
+            newest=True,
+        )
         self.two_step_page.open_rental_link(find_email_link(message, "Rent Now"))
         return self.two_step_page.read_lease_summary()
+
+    def _open_unit_form(self) -> None:
+        """Open the property (or search), pick a unit, assert Two-Step form."""
+        if self.property_url:
+            self.rental_page.open_property_page(self.property_url)
+        else:
+            self.rental_page.open_storefront()
+            if self.mp_state and self.mp_city:
+                self.rental_page.search_storage_location(
+                    state=self.mp_state, city=self.mp_city
+                )
+            else:
+                self.rental_page.select_first_available_location()
+        self.rental_page.select_unit()
+        flow = self.rental_page.wait_for_reservation_flow()
+        if flow != "two_step":
+            raise AssertionError(
+                "Storefront served the Legacy flow (\"Reserve This "
+                "Space\") instead of Two-Step (\"Reserve Now\" / \"Rent "
+                "Now\") for this session, even though this suite "
+                "configures the property for Two-Step - a known "
+                "intermittent storefront-side routing issue, not a "
+                "config problem."
+            )
+
+    def _pay_and_get_access(
+        self,
+        guest: dict,
+        rental_data: dict,
+        lease_summary: dict,
+        payment_method: str = "card",
+        card: dict | None = None,
+    ) -> dict:
+        """Shared Pay Now → Get Access after Lease Summary is on screen."""
+        if lease_summary["pay_now"] is None:
+            raise AssertionError(
+                "The rental form shows 'Sign Agreements' instead of 'Pay Now' - "
+                "that signing flow isn't supported yet; not paying"
+            )
+        charges_total = round(sum(lease_summary["charges"].values()), 2)
+        assert charges_total == lease_summary["total"] == lease_summary["pay_now"], (
+            f"Lease Summary doesn't add up - not paying: charges "
+            f"{lease_summary['charges']} = {charges_total}, Total Cost to Move-in "
+            f"{lease_summary['total']}, Pay Now {lease_summary['pay_now']}"
+        )
+        self.space_number = lease_summary["space_number"]
+
+        with allure.step("Fill rental form and pay"):
+            self.two_step_page.fill_rental_before_payment(rental_data, guest)
+            self.two_step_page.fill_business_representative(guest, rental_data)
+            payer_name = f"{guest['first_name']} {guest['last_name']}"
+            enroll_autopay = rental_data.get("enroll_autopay", True)
+            if payment_method == "ach":
+                self.two_step_page.pay_rental_by_ach(
+                    name_on_account=payer_name,
+                    routing_number=self.environment_config.ach_routing_number,
+                    account_number=self.environment_config.ach_account_number,
+                    billing_address=rental_data,
+                    enroll_autopay=enroll_autopay,
+                )
+            else:
+                card = card or {}
+                self.two_step_page.pay_rental_by_card(
+                    card_number=card.get("card_number") or self.environment_config.card_number,
+                    card_expiry=card.get("card_expiry") or self.environment_config.card_expiry,
+                    card_cvc=card.get("card_cvc") or self.environment_config.card_cvc,
+                    name_on_card=payer_name,
+                    zip_code=self.environment_config.card_zip_code,
+                    enroll_autopay=enroll_autopay,
+                    billing_address=rental_data,
+                )
+
+        space_number = lease_summary["space_number"]
+        with allure.step(f"Pay Now confirmation page (space {space_number})"):
+            self.two_step_page.assert_rental_complete(space_number)
+            from common_utils.mp_lease_costs import read_confirmation_page_costs
+
+            confirmation_costs = read_confirmation_page_costs(self.two_step_page.page)
+            lease_summary = {
+                **lease_summary,
+                "confirmation_charges": confirmation_costs["charges"],
+                "confirmation_total": confirmation_costs["total"],
+            }
+            save_confirmation_screenshot(
+                self.two_step_page.page,
+                self.confirmation_dir / f"rental-{space_number}.png",
+                allure_name=f"rental-confirmation-{space_number}",
+                attach_allure=False,
+            )
+
+        with allure.step(f"Get Access (space {space_number})"):
+            self.get_access_baseline = latest_email_time(guest["email"])
+            self.two_step_page.verify_id_later_and_get_access(rental_data)
+            save_confirmation_screenshot(
+                self.two_step_page.page,
+                self.confirmation_dir / f"get-access-{space_number}.png",
+                allure_name=f"get-access-confirmation-{space_number}",
+                attach_allure=False,
+            )
+        return lease_summary
+
+    @log_method_exceptions
+    def rent_unit_directly(
+        self,
+        guest: dict,
+        rental_data: dict,
+        payment_method: str = "card",
+        card: dict | None = None,
+        renting_as_business: bool = False,
+        days_from_today: int = 0,
+    ) -> dict:
+        """Two-Step direct paid move-in: open unit form → Rent Now → pay →
+        Get Access. Skips Reserve Now and the reservation confirmation email.
+        Returns the Lease Summary (same shape as rent_reserved_unit)."""
+        business_name = (
+            f"{guest['first_name']} {guest['last_name']} Business"
+            if renting_as_business
+            else None
+        )
+        with allure.step("Open unit and click Rent Now"):
+            self._open_unit_form()
+            self.move_in_date = self.two_step_page.start_rental_now(
+                email=guest["email"],
+                mobile=guest["mobile"],
+                first_name=guest["first_name"],
+                last_name=guest["last_name"],
+                renting_as_business=renting_as_business,
+                business_name=business_name,
+                days_from_today=days_from_today,
+            )
+            lease_summary = self.two_step_page.read_lease_summary()
+
+        return self._pay_and_get_access(
+            guest, rental_data, lease_summary, payment_method=payment_method, card=card
+        )
 
     @log_method_exceptions
     def rent_reserved_unit(
@@ -235,72 +376,12 @@ class MPTwoStepReservationSetup:
         (rental_data["enroll_autopay"]), wait for "You've got your space!",
         then Verify ID Later + mailing address/licence + Get Access.
         Returns the Lease Summary read before paying."""
-        lease_summary = self.open_rental_from_email(guest)
-        if lease_summary["pay_now"] is None:
-            # Confirmed live (2026-09-13, stage/Rutland): the form sometimes
-            # ends with "Sign Agreements" (lease signed before payment)
-            # instead of Pay Now - not walked yet, so stop before charging.
-            raise AssertionError(
-                "The rental form shows 'Sign Agreements' instead of 'Pay Now' - "
-                "that signing flow isn't supported yet; not paying"
-            )
-        charges_total = round(sum(lease_summary["charges"].values()), 2)
-        assert charges_total == lease_summary["total"] == lease_summary["pay_now"], (
-            f"Lease Summary doesn't add up - not paying: charges "
-            f"{lease_summary['charges']} = {charges_total}, Total Cost to Move-in "
-            f"{lease_summary['total']}, Pay Now {lease_summary['pay_now']}"
-        )
-        self.space_number = lease_summary["space_number"]
-        self.two_step_page.fill_business_representative(guest, rental_data)
-        payer_name = f"{guest['first_name']} {guest['last_name']}"
-        enroll_autopay = rental_data.get("enroll_autopay", True)
-        if payment_method == "ach":
-            self.two_step_page.pay_rental_by_ach(
-                name_on_account=payer_name,
-                routing_number=self.environment_config.ach_routing_number,
-                account_number=self.environment_config.ach_account_number,
-                billing_address=rental_data,
-                enroll_autopay=enroll_autopay,
-            )
-        else:
-            card = card or {}
-            self.two_step_page.pay_rental_by_card(
-                card_number=card.get("card_number") or self.environment_config.card_number,
-                card_expiry=card.get("card_expiry") or self.environment_config.card_expiry,
-                card_cvc=card.get("card_cvc") or self.environment_config.card_cvc,
-                name_on_card=payer_name,
-                zip_code=self.environment_config.card_zip_code,
-                enroll_autopay=enroll_autopay,
-                billing_address=rental_data,
-            )
-        space_number = lease_summary["space_number"]
-        self.two_step_page.assert_rental_complete(space_number)
-        from common_utils.mp_lease_costs import read_confirmation_page_costs
+        with allure.step("Resume rental from email (Lease Summary)"):
+            lease_summary = self.open_rental_from_email(guest)
 
-        confirmation_costs = read_confirmation_page_costs(self.two_step_page.page)
-        lease_summary = {
-            **lease_summary,
-            "confirmation_charges": confirmation_costs["charges"],
-            "confirmation_total": confirmation_costs["total"],
-        }
-        save_confirmation_screenshot(
-            self.two_step_page.page,
-            self.confirmation_dir / f"rental-{space_number}.png",
-            allure_name=f"rental-confirmation-{space_number}",
+        return self._pay_and_get_access(
+            guest, rental_data, lease_summary, payment_method=payment_method, card=card
         )
-        # The inbox's newest message time just before Get Access, so the
-        # rental email check can tell the email Get Access sends from Pay
-        # Now's (see mp_rental_emails).
-        self.get_access_baseline = latest_email_time(guest["email"])
-        self.two_step_page.verify_id_later_and_get_access(rental_data)
-        # The second step's confirmation - "Your space is ready!" after Get
-        # Access - next to the first step's (rental-<space>.png).
-        save_confirmation_screenshot(
-            self.two_step_page.page,
-            self.confirmation_dir / f"get-access-{space_number}.png",
-            allure_name=f"get-access-confirmation-{space_number}",
-        )
-        return lease_summary
 
     @log_method_exceptions
     def assert_rental_emails(
@@ -312,6 +393,8 @@ class MPTwoStepReservationSetup:
         security_deposit: float | None,
         autopay: bool = True,
         charges: dict[str, float] | None = None,
+        body_out: list[str] | None = None,
+        lease_artifacts_out: dict | None = None,
     ) -> str:
         """Old Robot suite's 10604 ("Validate Tenant email for Rental") and
         10633 (its Move-In Date is the lease date). Confirmed live
@@ -336,4 +419,6 @@ class MPTwoStepReservationSetup:
             autopay,
             get_access_baseline=self.get_access_baseline,
             charges=charges,
+            body_out=body_out,
+            lease_artifacts_out=lease_artifacts_out,
         )

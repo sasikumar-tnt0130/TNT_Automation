@@ -46,13 +46,65 @@ def _header_rects(page: pymupdf.Page, title: str) -> list[pymupdf.Rect]:
     return [r for r in rects if r.height <= 40]
 
 
+def _clickwrap_header_clip(
+    page: pymupdf.Page, space_number: str | None
+) -> pymupdf.Rect | None:
+    """Clickwrap / traditional Lease Agreement top card (UNIT # + total + card)."""
+    page_rect = page.rect
+    space = _norm_space(space_number)
+    text = page.get_text("text") or ""
+    if not re.search(r"TOTAL\s+MOVE-?\s*In\s+Cost", text, re.I):
+        return None
+    if space and not re.search(
+        rf"UNIT\s*#\s*:?\s*{re.escape(space)}\b", text, re.I
+    ):
+        # Wrong page / wrong unit
+        if re.search(r"UNIT\s*#\s*:", text, re.I):
+            return None
+    # Prefer anchoring on UNIT # when present.
+    anchors: list[pymupdf.Rect] = []
+    for needle in (
+        (f"UNIT #: {space}" if space else None),
+        (f"UNIT #:{space}" if space else None),
+        "UNIT #:",
+        "TOTAL MOVE-In Cost",
+        "TOTAL MOVE-IN COST",
+        "Card Details",
+    ):
+        if not needle:
+            continue
+        try:
+            anchors.extend(page.search_for(needle))
+        except Exception:
+            continue
+    if not anchors:
+        return None
+    top = min(a.y0 for a in anchors) - 12
+    # Include card details block under the total.
+    bottom = top + 220
+    for needle in ("Card Details", "Exp Date", "Credit Card Type"):
+        try:
+            hits = page.search_for(needle)
+        except Exception:
+            hits = []
+        for h in hits:
+            if h.y0 >= top - 4:
+                bottom = max(bottom, h.y1 + 48)
+    return pymupdf.Rect(
+        page_rect.x0 + 10,
+        max(page_rect.y0, top),
+        page_rect.x1 - 10,
+        min(page_rect.y1, bottom),
+    )
+
+
 def _space_card_clip(
     page: pymupdf.Page, space_number: str | None
 ) -> pymupdf.Rect | None:
     """Clip SPACE INFORMATION → COVERAGE → PAYMENT for ``space_number``.
 
-    Falls back to the first strong PAYMENT card when the space is unknown
-    or not found on this page.
+    Falls back to clickwrap Lease Agreement header, then the first strong
+    PAYMENT card when the space is unknown or not found on this page.
     """
     page_rect = page.rect
     space = _norm_space(space_number)
@@ -143,8 +195,9 @@ def _space_card_clip(
         band = page.get_text("text", clip=clip) or ""
         if _STRONG_PAYMENT.search(band):
             return clip
-    return None
 
+    # Clickwrap / traditional Lease Agreement (no Superlease cards).
+    return _clickwrap_header_clip(page, space_number)
 
 def attach_payment_screenshots_from_pdf(
     pdf_bytes: bytes,

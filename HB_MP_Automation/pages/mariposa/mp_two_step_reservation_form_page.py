@@ -7,6 +7,7 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from common_utils.wrapper_methods import first_visible, log_method_exceptions
+from pages.mariposa.mp_document_signing_page import MPDocumentSigningPage
 from pages.mariposa.mp_rental_payment_form import (
     ensure_payment_method_offered,
     enter_ach,
@@ -92,15 +93,49 @@ class MPTwoStepReservationFormPage:
 
     @log_method_exceptions
     def select_move_in_date(self, days_from_today: int = 1) -> date:
-        """Pick a future move-in date on the Two-Step #reservationDate calendar."""
+        """Pick a move-in date on the Two-Step #reservationDate calendar.
+
+        Rent Now uses ``days_from_today=0`` (today). The field is often
+        already today; opening the picker then waiting for
+        ``#calendar_modal`` times out on mobile (live 2026-09-22 Rutland).
+        """
         with allure.step(f"Select move-in date: {days_from_today} day(s) from today"):
+            target_date = date.today() + timedelta(days=max(days_from_today, 0))
+            wanted = f"{target_date:%m/%d/%Y}"
+            wanted_loose = f"{target_date.month}/{target_date.day}/{target_date.year}"
             move_in_date = self.page.locator("#reservationDate")
+            expect(move_in_date).to_be_visible(timeout=self.timeout)
+            current = ""
+            try:
+                current = (move_in_date.input_value() or "").strip()
+            except Exception:
+                # Mobile / some layouts: #reservationDate is not an <input>
+                # (live 2026-09-22 hosted payments re-run).
+                try:
+                    current = (move_in_date.inner_text() or "").strip()
+                except Exception:
+                    current = ""
+            if wanted in current or wanted_loose in current.replace(" ", ""):
+                return target_date
             move_in_date.click(force=True)
-            target_date = date.today() + timedelta(days=max(days_from_today, 1))
+            calendar = self.page.locator("#calendar_modal")
+            try:
+                expect(calendar).to_be_visible(timeout=waits().short)
+            except AssertionError:
+                # Mobile / some layouts: no #calendar_modal — type the date
+                # when the control is a real input; otherwise keep pre-filled.
+                try:
+                    move_in_date.fill(wanted)
+                    move_in_date.press("Tab")
+                except Exception:
+                    if not current:
+                        raise AssertionError(
+                            f"Move-in date control is not fillable and "
+                            f"#calendar_modal did not open (current={current!r})"
+                        )
+                return target_date
             self._click_calendar_day(target_date)
-            expect(self.page.locator("#calendar_modal")).to_be_hidden(
-                timeout=self.timeout
-            )
+            expect(calendar).to_be_hidden(timeout=self.timeout)
             return target_date
 
     def _click_calendar_day(self, target_date: date) -> None:
@@ -144,6 +179,163 @@ class MPTwoStepReservationFormPage:
         raise AssertionError(
             f"Calendar day {target_label!r} not found in #calendar_modal"
         )
+
+    @log_method_exceptions
+    def start_rental_now(
+        self,
+        email: str,
+        mobile: str,
+        first_name: str,
+        last_name: str,
+        renting_as_business: bool = False,
+        business_name: str | None = None,
+        days_from_today: int = 0,
+    ) -> date:
+        """Click **Rent Now** on the Two-Step unit form (direct paid move-in).
+
+        Unlike Legacy Rent Now, this unit form still requires guest identity
+        (or RAB Business Name / Phone / Email) before Rent Now — live
+        2026-09-22 Rutland: empty First/Last/Email/Mobile shows Required
+        and blocks submit. Skips Reserve Now / reservation confirmation.
+        """
+        with allure.step("Wait for the unit Rent Now form"):
+            self._dismiss_banners()
+            rent_button = self.page.get_by_role(
+                "button", name="Rent Now", exact=True
+            )
+            expect(rent_button).to_be_visible(timeout=self.timeout)
+            self._dismiss_banners()
+
+        if renting_as_business:
+            with allure.step(f"Fill business information: {business_name}"):
+                tick_checkbox(
+                    self.page,
+                    self.timeout,
+                    self.page.get_by_role(
+                        "checkbox", name="I am renting as a business"
+                    ),
+                    self.page.locator('label[for="rent-as-business"]').first,
+                )
+                self.page.get_by_role("textbox", name="Business Name").fill(
+                    business_name or f"{first_name} {last_name} Business"
+                )
+                self.page.get_by_role("textbox", name="Business Phone").fill(
+                    mobile
+                )
+                self.page.get_by_role("textbox", name="Business Email").fill(
+                    email
+                )
+        else:
+            with allure.step(
+                f"Fill guest details: {first_name} {last_name}"
+            ):
+                for field_name, field_value in (
+                    ("Email *", email),
+                    ("First Name *", first_name),
+                    ("Last Name *", last_name),
+                ):
+                    self.page.get_by_role("textbox", name=field_name).fill(
+                        field_value
+                    )
+                mobile_field = self.page.get_by_role(
+                    "textbox", name="Mobile *"
+                )
+                digits = re.sub(r"\D", "", mobile)
+                try:
+                    with self.page.expect_response(
+                        lambda response: "/validate-phone/" in response.url
+                        and digits
+                        in re.sub(r"%[0-9A-Fa-f]{2}|\D", "", response.url),
+                        timeout=waits().medium,
+                    ):
+                        mobile_field.fill(mobile)
+                except PlaywrightTimeoutError:
+                    mobile_field.fill(mobile)
+
+        move_in_date = self.select_move_in_date(days_from_today)
+
+        with allure.step("Click Rent Now"):
+            self._dismiss_banners()
+            # Phone layouts duplicate Rent Now; pick a visible one.
+            rent_button = first_visible(
+                self.page.get_by_role("button", name="Rent Now", exact=True)
+            )
+            expect(rent_button).to_be_visible(timeout=self.timeout)
+            # Must wait for Pay Now / Sign Agreements only — NOT
+            # `.total .cost` / sidebar. Mobile already shows a sticky
+            # "Total Cost to Move-in" on this unit form, so that locator
+            # was "visible" before click and the wait returned while still
+            # on Rent Now (live 2026-09-22 Rutland iPhone — read_lease_summary
+            # then timed out on Pay Now).
+            pay_or_sign = self.page.get_by_role(
+                "button", name=re.compile(r"Pay Now|Sign Agreements")
+            )
+            max_attempts = 3
+            last_error: Exception | None = None
+            for attempt in range(max_attempts):
+                self._dismiss_banners()
+                rent_button = first_visible(
+                    self.page.get_by_role(
+                        "button", name="Rent Now", exact=True
+                    )
+                )
+                if not rent_button.is_visible():
+                    # Already left the unit form.
+                    break
+                try:
+                    rent_button.scroll_into_view_if_needed()
+                except Exception:
+                    pass
+                try:
+                    rent_button.click(timeout=waits().medium)
+                except PlaywrightTimeoutError:
+                    # Sticky total / chat FAB can intercept on phone.
+                    rent_button.click(force=True)
+                try:
+                    expect(first_visible(pay_or_sign)).to_be_visible(
+                        timeout=self.timeout / max_attempts
+                    )
+                    last_error = None
+                    break
+                except AssertionError as error:
+                    last_error = error
+                    # Required-field blockers leave Rent Now up — re-check
+                    # identity fields before the next click.
+                    required = self.page.get_by_text(
+                        re.compile(r"^\s*Required\s*$", re.I)
+                    )
+                    if required.count() and required.first.is_visible():
+                        if renting_as_business:
+                            self.page.get_by_role(
+                                "textbox", name="Business Name"
+                            ).fill(
+                                business_name
+                                or f"{first_name} {last_name} Business"
+                            )
+                            self.page.get_by_role(
+                                "textbox", name="Business Phone"
+                            ).fill(mobile)
+                            self.page.get_by_role(
+                                "textbox", name="Business Email"
+                            ).fill(email)
+                        else:
+                            for field_name, field_value in (
+                                ("Email *", email),
+                                ("First Name *", first_name),
+                                ("Last Name *", last_name),
+                                ("Mobile *", mobile),
+                            ):
+                                self.page.get_by_role(
+                                    "textbox", name=field_name
+                                ).fill(field_value)
+                    if attempt == max_attempts - 1:
+                        raise
+            if last_error is not None:
+                raise last_error
+            expect(first_visible(pay_or_sign)).to_be_visible(
+                timeout=self.timeout
+            )
+        return move_in_date
 
     @log_method_exceptions
     def reserve_unit(
@@ -434,9 +626,27 @@ class MPTwoStepReservationFormPage:
         # Confirmed live (2026-09-13, stage/Rutland): a property that signs
         # the lease before payment ends the form with "Sign Agreements"
         # instead, with no amount on it - pay_now is None there.
-        action_text = first_visible(
-            self.page.get_by_role("button", name=re.compile(r"Pay Now|Sign Agreements"))
-        ).inner_text()
+        pay_or_sign = self.page.get_by_role(
+            "button", name=re.compile(r"Pay Now|Sign Agreements")
+        )
+        try:
+            action = first_visible(pay_or_sign)
+            expect(action).to_be_visible(timeout=waits().medium)
+        except AssertionError:
+            still_rent = self.page.get_by_role(
+                "button", name="Rent Now", exact=True
+            )
+            hint = ""
+            if still_rent.count() and still_rent.first.is_visible():
+                hint = (
+                    " Still on the unit form (Rent Now visible) — "
+                    "Rent Now click did not open the payment step."
+                )
+            raise AssertionError(
+                "Pay Now / Sign Agreements not visible after Rent Now."
+                + hint
+            ) from None
+        action_text = action.inner_text()
         lease_summary = {
             "space_number": space.group(1) if space else None,
             "rates": rates,
@@ -548,7 +758,7 @@ class MPTwoStepReservationFormPage:
                     name=f"Rent Now link did not load (try {attempt})",
                     attachment_type=allure.attachment_type.TEXT,
                 )
-                self.page.wait_for_timeout(10000)
+                self.page.wait_for_timeout(waits().settle_medium)
         for attempt in range(1, attempts + 1):
             expect(rental_form.or_(moved).first).to_be_attached(timeout=self.timeout)
             if not moved.first.is_visible():
@@ -559,7 +769,7 @@ class MPTwoStepReservationFormPage:
                 attachment_type=allure.attachment_type.PNG,
             )
             if attempt < attempts:
-                self.page.wait_for_timeout(10000)
+                self.page.wait_for_timeout(waits().settle_medium)
                 self.page.reload(wait_until="domcontentloaded")
         raise AssertionError(
             f"The storefront showed 'Looks like the page has changed or moved' for the "
@@ -573,6 +783,164 @@ class MPTwoStepReservationFormPage:
         Mobile, First/Last Name - confirmed 2026-09-15), which blocks Pay Now
         until filled. See mp_rental_payment_form.fill_business_representative."""
         fill_business_representative(self.page, self.timeout, guest, rental_data)
+
+    @log_method_exceptions
+    def _check_radio(self, radio_id: str) -> None:
+        """Custom-styled radios (native input behind a span) — same approach
+        as MPLegacyReservationFormPage._check_radio."""
+        radio = self.page.locator(f'[id="{radio_id}"]')
+        if radio.count() == 0 or radio.first.is_checked():
+            return
+        label = self.page.locator(f'label[for="{radio_id}"]').first
+        for tick in (
+            lambda: label.click(force=True),
+            lambda: radio.first.check(force=True),
+            lambda: label.dispatch_event("click"),
+        ):
+            try:
+                tick()
+                expect(radio.first).to_be_checked(timeout=waits().short)
+                return
+            except Exception:
+                continue
+        expect(radio.first).to_be_checked(timeout=self.timeout)
+
+    @log_method_exceptions
+    def fill_rental_before_payment(
+        self, rental_data: dict, guest: dict | None = None
+    ) -> None:
+        """Mandatory fields on the Two-Step rent form that reservation alone
+        does not set. Walked failure 2026-09-19 Bellflower Superlease: Pay Now
+        hung 240s with Notice Delivery Method* showing Required and none of
+        Electronic Mail / Mail / Hand Delivery selected.
+
+        After **Rent Now**, Email / Name / Mobile are empty — pass ``guest``
+        to fill them (live 2026-09-21).
+        """
+        with allure.step("Fill required rental fields before payment"):
+            self._dismiss_cookie_banner()
+            business = self.page.get_by_role(
+                "checkbox", name="I am renting as a business"
+            )
+            renting_as_business = (
+                business.count() > 0 and business.first.is_checked()
+            )
+            # Individual Rent Now: fill empty Email / Name / Mobile. RAB:
+            # Business Email / Name / Phone (empty after Rent Now even when
+            # the unit-page checkbox carried — live 2026-09-21) + Business
+            # Representative later.
+            if guest is not None and not renting_as_business:
+                email = self.page.locator("#idtenantemail")
+                if email.count() and email.is_visible() and not (
+                    email.input_value() or ""
+                ).strip():
+                    email.fill(guest["email"])
+                for name, value in (
+                    ("First Name *", guest["first_name"]),
+                    ("Last Name *", guest["last_name"]),
+                ):
+                    field = self.page.get_by_role("textbox", name=name).first
+                    if field.count() and field.is_visible() and not (
+                        field.input_value() or ""
+                    ).strip():
+                        field.fill(value)
+                mobile = self.page.get_by_role("textbox", name="Mobile *").first
+                if mobile.count() and mobile.is_visible() and not (
+                    mobile.input_value() or ""
+                ).strip():
+                    digits = re.sub(r"\D", "", guest["mobile"])
+                    try:
+                        with self.page.expect_response(
+                            lambda response: "/validate-phone/" in response.url
+                            and digits
+                            in re.sub(r"%[0-9A-Fa-f]{2}|\D", "", response.url),
+                            timeout=waits().medium,
+                        ):
+                            mobile.fill(guest["mobile"])
+                    except PlaywrightTimeoutError:
+                        mobile.fill(guest["mobile"])
+            elif guest is not None and renting_as_business:
+                biz_name = (
+                    f"{guest['first_name']} {guest['last_name']} Business"
+                )
+                with allure.step(f"Business identity: {biz_name}"):
+                    for field_name, value in (
+                        ("Business Email", guest["email"]),
+                        ("Business Name", biz_name),
+                    ):
+                        field = self.page.get_by_role(
+                            "textbox", name=field_name
+                        ).first
+                        if field.count() and field.is_visible() and not (
+                            field.input_value() or ""
+                        ).strip():
+                            field.fill(value)
+                    phone = self.page.get_by_role(
+                        "textbox", name="Business Phone"
+                    ).first
+                    if phone.count() and phone.is_visible() and not (
+                        phone.input_value() or ""
+                    ).strip():
+                        digits = re.sub(r"\D", "", guest["mobile"])
+                        try:
+                            with self.page.expect_response(
+                                lambda response: "/validate-phone/"
+                                in response.url
+                                and digits
+                                in re.sub(
+                                    r"%[0-9A-Fa-f]{2}|\D", "", response.url
+                                ),
+                                timeout=waits().medium,
+                            ):
+                                phone.fill(guest["mobile"])
+                        except PlaywrightTimeoutError:
+                            phone.fill(guest["mobile"])
+            password = self.page.locator("#idtenantpassword")
+            if (
+                password.count() > 0
+                and password.is_visible()
+                and not password.input_value()
+                and rental_data.get("account_password")
+            ):
+                password.fill(rental_data["account_password"])
+
+            # Notice Delivery Method* — required on Two-Step Superlease.
+            if self.page.locator("#id_notice_deliveryemail").count():
+                self._check_radio("id_notice_deliveryemail")
+            else:
+                email_label = self.page.get_by_text(
+                    "Electronic Mail (Email)", exact=True
+                )
+                if email_label.count() and email_label.first.is_visible():
+                    email_label.first.click(force=True)
+
+            # Additional Information yes/no — answer No when present/unticked
+            # (same defaults as Legacy when extras are not requested).
+            for question in (
+                "active_military",
+                "lien_holder_confirmation",
+                "emergency",
+                "access_authorized",
+                "vehicle_confirmation",
+            ):
+                no_id = f"id_{question}no"
+                yes_id = f"id_{question}yes"
+                no_radio = self.page.locator(f'[id="{no_id}"]')
+                yes_radio = self.page.locator(f'[id="{yes_id}"]')
+                if no_radio.count() == 0:
+                    continue
+                if yes_radio.count() and yes_radio.first.is_checked():
+                    continue
+                if not no_radio.first.is_checked():
+                    self._check_radio(no_id)
+
+            # Protection plan if offered and nothing selected yet.
+            coverage = self.page.locator('input[id^="coverageAmount-ins"]')
+            if coverage.count() > 0 and not any(
+                coverage.nth(i).is_checked() for i in range(coverage.count())
+            ):
+                self._check_radio(coverage.first.get_attribute("id"))
+                expect(coverage.first).to_be_checked(timeout=self.timeout)
 
     @log_method_exceptions
     def pay_rental_by_ach(
@@ -674,6 +1042,43 @@ class MPTwoStepReservationFormPage:
         self.page.on("response", record)
 
     @log_method_exceptions
+    def _sign_documents_if_presented(self) -> bool:
+        """Two-Step Superlease: Pay Now can open the document-signing widget
+        (PandaDoc / dossier) on the same rent URL or navigate to /documents/
+        before thank-you. Sign when the widget is actionable; return True if
+        signed. Returns False when the widget is absent or still loading.
+
+        Walked failure 2026-09-19 Bellflower: Heartland token + pandadoc /
+        dossier PUTs for 4 minutes with Pay Now still shown and no
+        POST .../rentals — signing was never driven.
+        """
+        iframe = self.page.locator('iframe[src*="document-signing"]')
+        on_documents = "/documents/" in self.page.url
+        widget_up = False
+        if iframe.count() > 0:
+            try:
+                widget_up = iframe.first.is_visible()
+            except Exception:
+                widget_up = False
+        if not (on_documents or widget_up):
+            return False
+        frame = self.page.frame_locator('iframe[src*="document-signing"]')
+        ready = (
+            frame.get_by_role("button", name="Start Signing", exact=True)
+            .or_(frame.locator("img.replaced-text"))
+            .first
+        )
+        try:
+            expect(ready).to_be_visible(timeout=waits().short)
+        except AssertionError:
+            return False
+        with allure.step("Sign Superlease / lease documents after Pay Now"):
+            MPDocumentSigningPage(self.page, self.timeout).sign_all(
+                require_documents_url=on_documents
+            )
+        return True
+
+    @log_method_exceptions
     def assert_rental_complete(self, space_number: str) -> None:
         """Confirmed live (2026-09-13): Pay Now goes to .../finalise/ ("We are
         processing your lease!") for a minute or two, then to
@@ -683,29 +1088,48 @@ class MPTwoStepReservationFormPage:
         Also seen (2026-09-15, Chula Vista, card with autopay as a business,
         twice): the storefront ends on "Oops... your rental did not go
         through" instead - that fails at once, with the rentals response
-        recorded by _watch_rental_response."""
+        recorded by _watch_rental_response.
+
+        Superlease (2026-09-19): Pay Now may open document-signing first —
+        signed here before waiting on thank-you.
+        """
         with allure.step(f"Rental confirmed for space {space_number}"):
             confirmed = self.page.get_by_text("You've got your space!", exact=False).first
             not_through = self.page.get_by_text("your rental did not go through", exact=False).first
-            # Or Pay Now is refused on the form itself (2026-09-15).
-            invalid_card = self.page.get_by_text("Invalid Card Number", exact=False).locator("visible=true").first
-            try:
-                expect(confirmed.or_(not_through).or_(invalid_card).first).to_be_visible(timeout=self.timeout * 4)
-            except AssertionError:
+            invalid_card = self.page.get_by_text(
+                "Invalid Card Number", exact=False
+            ).locator("visible=true").first
+            deadline_ms = int(self.timeout * 4)
+            poll = max(waits().poll_interval, 250)
+            signed = False
+            elapsed = 0
+            while elapsed <= deadline_ms:
+                if invalid_card.is_visible():
+                    raise AssertionError(
+                        'Pay Now was refused: the card form shows "Invalid Card Number"'
+                    )
+                if confirmed.is_visible() or not_through.is_visible():
+                    break
+                if not signed and self._sign_documents_if_presented():
+                    signed = True
+                    # Signing can take minutes; keep room for thank-you after.
+                    deadline_ms = max(deadline_ms, elapsed + int(self.timeout * 2))
+                self.page.wait_for_timeout(poll)
+                elapsed += poll
+            else:
                 pay_now = self.page.get_by_role("button", name=re.compile(r"^Pay Now"))
-                notices = self.page.locator(".v-snack__content, .toast, [role=alert], .alert").filter(
-                    visible=True
-                ).all_inner_texts()
+                notices = self.page.locator(
+                    ".v-snack__content, .toast, [role=alert], .alert"
+                ).filter(visible=True).all_inner_texts()
                 raise AssertionError(
-                    f"No outcome {self.timeout * 4 / 1000:.0f} s after Pay Now - still on "
+                    f"No outcome {deadline_ms / 1000:.0f} s after Pay Now - still on "
                     f"{self.page.url.split('?')[0]}; Pay Now "
-                    f"{'still shown' if pay_now.count() and pay_now.first.is_visible() else 'gone'}; notices "
+                    f"{'still shown' if pay_now.count() and pay_now.first.is_visible() else 'gone'}; "
+                    f"signed={signed}; notices "
                     f"{[' '.join(text.split())[:120] for text in notices]}; calls after Pay Now "
                     f"{getattr(self, '_writes_after_pay', None)}; rentals responses "
                     f"{getattr(self, '_rental_responses', None)}"
                 ) from None
-            if invalid_card.is_visible():
-                raise AssertionError('Pay Now was refused: the card form shows "Invalid Card Number"')
             if not confirmed.is_visible():
                 raise AssertionError(
                     'The storefront answered Pay Now with "Oops... your rental did not go through" '

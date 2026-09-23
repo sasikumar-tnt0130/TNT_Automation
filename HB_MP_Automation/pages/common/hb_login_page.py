@@ -1,4 +1,5 @@
 import re
+from urllib.parse import urlparse
 
 import allure
 from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError, expect
@@ -14,6 +15,19 @@ _LOGIN_ERROR = re.compile(
     r"try again|authentication|unauthorized|error",
     re.IGNORECASE,
 )
+# Shown when /dashboard is hit without a session (redirect to
+# /login?redirect=%2Fdashboard) — not a failed credential submit.
+_SESSION_REDIRECT_BANNER = re.compile(
+    r"you are not logged in|please log in to continue",
+    re.IGNORECASE,
+)
+# Full-URL match for the dashboard *path* only. A bare `/dashboard` also
+# matches `login?redirect=/dashboard` and falsely treats the login page as
+# success (live 2026-09-22 clickwrap setup — #search-box never appears).
+_DASHBOARD_URL = re.compile(
+    r"^https?://[^/?#]+/dashboard(?:/|\?|#|$)",
+    re.IGNORECASE,
+)
 
 
 class HBLoginPage:
@@ -26,7 +40,10 @@ class HBLoginPage:
         self.base_url = environment_config.hb_base_url
         self.username_value = environment_config.hb_username
         self.password_value = environment_config.hb_password
-        self.login_url = self.base_url
+        # Always the login route — base_url alone can redirect oddly and
+        # skips the form when already on /login?redirect=… (live 2026-09-22).
+        base_app = self.base_url.rstrip("/").removesuffix("/login")
+        self.login_url = f"{base_app}/login"
         self.timeout = timeout
         self._bind_page_locators(page)
 
@@ -37,39 +54,131 @@ class HBLoginPage:
                 self.browser_context = page.context
             except Exception:
                 pass
-        self.username = page.get_by_role("textbox", name="Username")
-        self.password = page.get_by_role("textbox", name="Password")
+        # Prefer input#username — get_by_placeholder("Username") also matches
+        # the wrapping div#username (strict-mode violation, live 2026-09-22).
+        self.username = page.locator("input#username")
+        self.password = page.locator("input#password")
         self.login_button = page.get_by_role("button", name="Login")
 
     def rebind_page(self, page: Page) -> None:
         """Point this helper at a new tab in the same HB context (video slice)."""
         self._bind_page_locators(page)
 
+    @staticmethod
+    def _url_path(url: str) -> str:
+        return (urlparse(url or "").path or "").rstrip("/") or "/"
+
+    def _on_login_url(self, url: str | None = None) -> bool:
+        path = self._url_path(url if url is not None else (self.page.url or ""))
+        return path.lower() == "/login" or path.lower().endswith("/login")
+
+    def _on_dashboard_url(self, url: str | None = None) -> bool:
+        path = self._url_path(url if url is not None else (self.page.url or ""))
+        return path.lower() == "/dashboard" or path.lower().endswith("/dashboard")
+
+    def _on_hb_app(self, url: str, base: str) -> bool:
+        return bool(url) and url.startswith(base.rstrip("/"))
+
+    def _login_form_visible(self, timeout: float = 500) -> bool:
+        try:
+            return self.username.is_visible(timeout=timeout)
+        except Exception:
+            return False
+
+    def _dashboard_shell_ready(self, timeout: float = 500) -> bool:
+        """True when the logged-in dashboard chrome is present (#search-box).
+
+        A bare ``/dashboard`` URL is not enough — the SPA can briefly show
+        that path with an empty document (aria only ``contentinfo``, zero
+        cookies) before redirecting to ``/login?redirect=…`` (live
+        2026-09-22 create_hb_admin_session / clickwrap APW).
+        """
+        try:
+            return self.page.locator("#search-box").is_visible(timeout=timeout)
+        except Exception:
+            return False
+
+    def _wait_for_dashboard_shell_or_login_form(self) -> None:
+        """After goto /dashboard: real shell, or login form — not URL alone."""
+        try:
+            self.page.wait_for_function(
+                """() => {
+                    const path = (location.pathname || '').replace(/\\/+$/, '') || '/';
+                    if (document.querySelector('#search-box')) return true;
+                    if (/\\/login$/i.test(path)) {
+                        const user = document.querySelector(
+                            'input#username, input[placeholder="Username"], '
+                            + 'input[name="username"]'
+                        );
+                        return !!(user && user.offsetParent !== null);
+                    }
+                    return false;
+                }""",
+                timeout=min(self.timeout, 30000),
+            )
+        except PlaywrightTimeoutError:
+            pass
+
+    # Back-compat name used by callers / older steps.
+    def _wait_for_dashboard_or_login_form(self) -> None:
+        self._wait_for_dashboard_shell_or_login_form()
+
     @log_method_exceptions
     def ensure_logged_in(self) -> None:
         """Reuse an already-authenticated HB window; login only if needed.
 
-        When this page is already on an HB app route (dashboard, settings,
-        etc.) without the login form, do nothing — callers then open
-        Settings / FMS / lease panels on the same window. Otherwise run
-        the normal open_login_page → credentials flow.
+        When this page already has the dashboard shell (``#search-box``) or
+        another authenticated HB route without the login form, do nothing.
+        Otherwise run open_login_page → credentials.
 
-        For Tenants / Leads / main-shell navigation after a shared admin
-        session left Settings open, use ``ensure_on_dashboard`` instead.
+        Never treat a bare ``/dashboard`` URL as logged in — the SPA can
+        land there with an empty shell and zero cookies before bouncing to
+        ``/login?redirect=%2Fdashboard`` (live 2026-09-22).
         """
         with allure.step("Ensure HB logged in"):
             url = self.page.url or ""
-            base = self.base_url.rstrip("/")
-            try:
-                login_form_visible = self.username.is_visible(timeout=500)
-            except Exception:
-                login_form_visible = False
-            if login_form_visible:
+            base_app = self.base_url.rstrip("/").removesuffix("/login")
+
+            # Already on login (incl. ?redirect=) — fill; never early-return.
+            if self._on_login_url(url) or self._login_form_visible(timeout=2000):
+                expect(self.username).to_be_visible(timeout=self.timeout)
                 self.submit_login_credentials()
                 self.assert_login_successful()
                 return
-            if url.startswith(base) and not re.search(r"/login(?:/|$|\?)", url, re.I):
+
+            # Authenticated shell already up — keep the same window.
+            if self._dashboard_shell_ready(timeout=2000):
                 return
+
+            # Other HB app route (Settings, etc.) without login form.
+            if (
+                self._on_hb_app(url, base_app)
+                and not self._on_login_url(url)
+                and not self._login_form_visible(timeout=500)
+            ):
+                # Blank SPA on /dashboard (no shell yet) must not early-return.
+                if self._on_dashboard_url(url) and not self._dashboard_shell_ready(
+                    timeout=waits().short
+                ):
+                    pass  # fall through — wait / re-login below
+                else:
+                    return
+
+            # Shared tab was on Mariposa / blank — try dashboard (session or redirect).
+            try:
+                self.page.goto(f"{base_app}/dashboard", wait_until="commit")
+            except PlaywrightTimeoutError:
+                pass
+            self._wait_for_dashboard_shell_or_login_form()
+            url = self.page.url or ""
+            if self._on_login_url(url) or self._login_form_visible(timeout=2000):
+                expect(self.username).to_be_visible(timeout=self.timeout)
+                self.submit_login_credentials()
+                self.assert_login_successful()
+                return
+            if self._dashboard_shell_ready(timeout=waits().short):
+                return
+
             if self.open_login_page():
                 self.submit_login_credentials()
             self.assert_login_successful()
@@ -82,11 +191,19 @@ class HBLoginPage:
         Clear Cache. Tenants and Leads need ``#search-box`` on the main
         shell; clicking it while Settings' ``v-dialog`` is active times out
         (live 2026-09-18, legacy_superlease HB validation).
+
+        Uses ``HBSettingsNavigation.close_settings_panel`` (project-wide
+        one-open / one-close rule) before falling back to a dashboard goto.
         """
         with allure.step("Ensure HB dashboard (leave Settings if open)"):
+            from pages.common.hb_settings_navigation import HBSettingsNavigation
+
             self.ensure_logged_in()
             base = self.base_url.rstrip("/").removesuffix("/login")
             dashboard_url = f"{base}/dashboard"
+            nav = HBSettingsNavigation(self.page, self.timeout)
+            nav.close_settings_panel()
+            # Nested non-Settings dialogs (confirm modals) may remain.
             for _ in range(3):
                 dialog = self.page.locator(".v-dialog__content--active").first
                 if dialog.count() == 0 or not dialog.is_visible():
@@ -100,20 +217,23 @@ class HBLoginPage:
                     )
                     if close.count() > 0 and close.first.is_visible():
                         close.first.click(force=True)
-            settings_open = False
-            try:
-                settings_open = self.page.get_by_role(
-                    "textbox", name="Filter"
-                ).is_visible(timeout=500)
-            except Exception:
-                settings_open = False
-            on_dashboard = bool(
-                re.search(r"/dashboard", self.page.url or "", re.I)
-            )
-            if settings_open or not on_dashboard:
+            settings_still_open = nav.is_settings_panel_open()
+            shell_ready = self._dashboard_shell_ready(timeout=1000)
+            # Goto clears a stuck Settings overlay even when the URL already
+            # says /dashboard (live 2026-09-21 after advance-days ensure).
+            # Also recover blank SPA / expired session (live 2026-09-22).
+            if settings_still_open or not shell_ready:
                 self.page.goto(dashboard_url, wait_until="domcontentloaded")
-                expect(self.page).to_have_url(
-                    re.compile(r"/dashboard"), timeout=self.timeout
+                self._wait_for_dashboard_shell_or_login_form()
+                # Expired session → /login?redirect=%2Fdashboard + banner
+                # (live 2026-09-22 screenshot).
+                if self._on_login_url() or self._login_form_visible(timeout=2000):
+                    self.submit_login_credentials()
+                self.assert_login_successful()
+            else:
+                expect(self.page).to_have_url(_DASHBOARD_URL, timeout=self.timeout)
+                expect(self.page.locator("#search-box")).to_be_visible(
+                    timeout=self.timeout
                 )
 
     @log_method_exceptions
@@ -170,14 +290,26 @@ class HBLoginPage:
                 # instead. By the time the Username wait above has
                 # timed out, that redirect (if any) has had the whole
                 # wait to land.
-                if re.search(r"/dashboard", self.page.url):
+                if self._on_dashboard_url():
                     return False
                 last_error = error
+                # Blank SPA boot (aria often only "contentinfo") — reload
+                # before the next goto so the next attempt is not stuck
+                # on the same dead document.
+                try:
+                    self.page.reload(wait_until="commit")
+                except Exception:
+                    pass
         raise last_error
 
     @log_method_exceptions
     def _login_error_visible(self) -> bool:
-        """True when a login-form error/alert is showing."""
+        """True when a credentials/auth failure alert is showing.
+
+        Ignores the session-redirect banner ("You are not logged in. Please
+        log in to continue.") on ``/login?redirect=…`` — that is expected
+        before submit, not a failed Login click.
+        """
         for locator in (
             self.page.locator(".v-alert").filter(visible=True),
             self.page.locator(".error--text, .v-messages__message").filter(
@@ -189,6 +321,10 @@ class HBLoginPage:
                 if locator.count() == 0:
                     continue
                 text = (locator.first.inner_text(timeout=500) or "").strip()
+                if not text:
+                    continue
+                if _SESSION_REDIRECT_BANNER.search(text):
+                    continue
                 if text and _LOGIN_ERROR.search(text):
                     return True
             except Exception:
@@ -223,7 +359,7 @@ class HBLoginPage:
                 self.login_button.click()
             try:
                 expect(self.page).to_have_url(
-                    re.compile(r"/dashboard"),
+                    _DASHBOARD_URL,
                     timeout=waits().long if attempt == 0 else waits().medium,
                 )
                 return
@@ -235,7 +371,7 @@ class HBLoginPage:
                     with allure.step(
                         "Login error or form still shown — click Login again"
                     ):
-                        self.page.wait_for_timeout(waits().short)
+                        self.page.wait_for_timeout(waits().settle_short)
                         if self._still_on_login_form():
                             self.username.fill(self.username_value)
                             self.password.fill(self.password_value)
@@ -254,7 +390,10 @@ class HBLoginPage:
                     self.username.fill(self.username_value)
                     self.password.fill(self.password_value)
                 self.login_button.click()
-        expect(self.page).to_have_url(re.compile(r"/dashboard"), timeout=self.timeout)
+        expect(self.page).to_have_url(_DASHBOARD_URL, timeout=self.timeout)
+        # URL alone is insufficient — blank SPA can sit on /dashboard with
+        # zero cookies before bouncing to login (live 2026-09-22).
+        expect(self.page.locator("#search-box")).to_be_visible(timeout=self.timeout)
         # Confirmed live: this dashboard's own background polling/
         # websocket traffic (task center counts, charm widgets, etc.)
         # never lets the network stay quiet for the 500ms Playwright's

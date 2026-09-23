@@ -6,7 +6,7 @@ from common_utils.hb_quick_launch_lease_setup import create_lease_through_quick_
 from pages.common.hb_tenant_documents_page import HBTenantDocumentsPage
 
 UPLOAD_FIXTURE_PATH = (
-    Path(__file__).resolve().parents[2] / "config" / "test_data" / "test_upload.txt"
+    Path(__file__).resolve().parents[2] / "config" / "test_data" / "uploads" / "test_upload.txt"
 )
 
 

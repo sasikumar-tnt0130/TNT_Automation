@@ -786,9 +786,28 @@ def finalize_hb_admin_session_video_for_test(
 def ensure_hb_admin_page_ready(
     hb_login_page: HBLoginPage, app_config
 ) -> None:
-    """Reopen the shared HB tab if the previous test closed it for video."""
+    """Reopen the shared HB tab if the previous test closed it for video.
+
+    Also re-login when the tab is still open but sitting on
+    ``/login?redirect=…`` or a blank ``/dashboard`` shell after a session
+    drop (live 2026-09-22).
+    """
     page = getattr(hb_login_page, "page", None)
     if page is not None and not page.is_closed():
+        try:
+            url = page.url or ""
+            needs_login = (
+                hb_login_page._on_login_url(url)
+                or hb_login_page._login_form_visible(timeout=500)
+                or (
+                    hb_login_page._on_dashboard_url(url)
+                    and not hb_login_page._dashboard_shell_ready(timeout=500)
+                )
+            )
+            if needs_login:
+                hb_login_page.ensure_logged_in()
+        except Exception as exc:
+            logger.warning("HB admin session refresh failed: %s", exc)
         return
     context = getattr(hb_login_page, "browser_context", None)
     if context is None:

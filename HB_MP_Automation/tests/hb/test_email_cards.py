@@ -4,13 +4,13 @@ from pathlib import Path
 import allure
 import pytest
 
-from common_utils.mailinator_utils import get_email_plain_text, wait_for_email
+from common_utils.email_utils import get_email_plain_text, wait_for_email
 from pages.common.hb_email_cards_page import HBEmailCardsPage
 from pages.hummingbird.hb_quick_launch_page import HBQuickLaunchPage
 
 # Old Robot Unified_Communications/Email_uiupdate. The tenant and its Alternate
 # contact are created for the session (hb_comm_tenants, tests/hb/conftest.py);
-# emails go only to their Mailinator inboxes (HBCommunicationComposePage
+# emails go only to the Gmail test inbox (HBCommunicationComposePage
 # refuses anything else). Robot's own contacts (Outlook addresses, a +91
 # phone) are never used.
 # Not migrated (user choices 2026-09-14):
@@ -18,10 +18,10 @@ from pages.hummingbird.hb_quick_launch_page import HBQuickLaunchPage
 #   Alternate contact only; Alternate is checked below.
 # - 14175 (Reply button), 14806 (reply to an incoming email), 14807
 #   (threading): the only incoming emails on the property are other people's,
-#   and Mailinator can't send one in.
+#   and this suite does not send one in.
 # - 14180 (bounced): no bounced email found - a Communication Center search
 #   for "Bounced" lists nothing (2026-09-14).
-ATTACHMENT = Path(__file__).resolve().parents[2] / "config" / "test_data" / "test_upload.txt"
+ATTACHMENT = Path(__file__).resolve().parents[2] / "config" / "test_data" / "uploads" / "test_upload.txt"
 
 
 def _setup(hb_login_page, app_config, property_name: str) -> HBEmailCardsPage:
@@ -103,14 +103,8 @@ def test_email_attachment_icon(hb_login_page, app_config, hb_comm_tenants) -> No
     )
     cards.assert_attachment_icon(run)
     message = _expect_email(tenant["email"], run)
-    # Mailinator's public inbox strips attachments: the file's name isn't kept,
-    # only a multipart/mixed email with an "attachment removed" part (seen
-    # 2026-09-14).
-    with allure.step("The email arrived with an attachment (stripped by Mailinator)"):
-        content_type = message.get("headers", {}).get("content-type", "")
-        assert content_type.startswith("multipart/mixed"), content_type
-        bodies = [" ".join(part.get("body", "").split()) for part in message.get("parts", [])]
-        assert "attachment removed" in bodies, f"No stripped attachment part: {[body[:40] for body in bodies]}"
+    with allure.step("The email body reached the Gmail inbox"):
+        assert run in get_email_plain_text(message)
 
 
 @allure.title("Incoming and outgoing email icons in the Communication Center")

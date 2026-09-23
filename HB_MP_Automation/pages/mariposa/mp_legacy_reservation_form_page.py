@@ -33,25 +33,18 @@ ADDITIONAL_QUESTIONS = (
 
 
 class MPLegacyReservationFormPage:
-    """Legacy Flow: "Reserve This Space" (a no-payment hold) -> resume the
-    reservation via "Rent online now" -> complete the consolidated rental
-    application (guest info, notice delivery, payment, agreement) ->
-    move-in confirmation.
+    """Legacy Flow: the unit form at .../rent_or_reserve/... offers both
+    **Rent Now** (immediate paid move-in) and **Reserve This Space** (hold)
+    side by side — confirmed live 2026-09-21 on uat_storoutlet/Bellflower.
+    Reserve → thank-you → Rent online now; Rent Now lands on the same
+    rental application. Unit/tier selection lives on MPUnitSearchPage.
 
-    Storefront search/unit-selection is shared with the direct-rent flow
-    and lives on MPUnitSearchPage; this page object picks up from the unit
-    selection page (the "Reserve This Space" form) onward.
-
-    Confirmed live (2026-09-14, uat_storoutlet/Bellflower): the resumed
-    reservation's application now has an account password, an alternate
-    contact, Renter Identity Verification and a protection plan before
-    payment (fill_rental_application), Card or ACH with one autopay box
-    (pay_with), and ends one of two ways by the property's lease
-    configuration (submit_rental) - "Sign Agreements" and a separate
-    document-signing step with Traditional signing (Clickwrap off), or the
-    agreement box and "Pay Now". The 2026-09-07 stage walk found a single
-    form with no signing step whatever the configuration; that no longer
-    holds.
+    Confirmed live (2026-09-14, uat_storoutlet/Bellflower): the rental
+    application has account password, alternate contact, Renter Identity
+    Verification and a protection plan before payment (fill_rental_application),
+    Card or ACH with one autopay box (pay_with), and ends one of two ways by
+    the property's lease configuration (submit_rental) - "Sign Agreements"
+    (Traditional) or the agreement box and "Pay Now" (Clickwrap / Superlease).
     """
 
     @log_method_exceptions
@@ -124,23 +117,45 @@ class MPLegacyReservationFormPage:
 
     @log_method_exceptions
     def select_move_in_date(self, days_from_today: int = 1) -> date:
-        """Pick a future move-in date on the Reserve This Space calendar.
-        Navigates to later months when the target is past the open month."""
+        """Pick a move-in date on the Reserve This Space / Rent Now calendar.
+
+        ``days_from_today=0`` (Rent Now) keeps today when the field is already
+        pre-filled; otherwise opens the calendar (or types into the date
+        textbox variant).
+        """
         with allure.step(f"Select move-in date: {days_from_today} day(s) from today"):
-            target_date = date.today() + timedelta(days=max(days_from_today, 1))
+            target_date = date.today() + timedelta(days=max(days_from_today, 0))
+            wanted = f"{target_date:%m/%d/%Y}"
             variant_date = self.page.get_by_role("textbox", name="date", exact=True)
             if variant_date.count() > 0 and variant_date.first.is_visible():
-                variant_date.first.fill(target_date.strftime("%m/%d/%Y"))
-                variant_date.first.press("Tab")
+                current = (variant_date.first.input_value() or "").strip()
+                if current not in (wanted, f"{target_date.month}/{target_date.day}/{target_date.year}"):
+                    variant_date.first.fill(wanted)
+                    variant_date.first.press("Tab")
                 return target_date
             move_in_date = self.page.get_by_role(
                 "textbox", name=re.compile(r"move.?in date", re.IGNORECASE)
             ).last
+            current = ""
+            try:
+                current = (move_in_date.input_value() or "").strip()
+            except Exception:
+                pass
+            if current in (
+                wanted,
+                f"{target_date.month}/{target_date.day}/{target_date.year}",
+            ):
+                return target_date
             move_in_date.click(force=True)
+            calendar = self.page.locator("#calendar_modal")
+            try:
+                expect(calendar).to_be_visible(timeout=waits().short)
+            except AssertionError:
+                move_in_date.fill(wanted)
+                move_in_date.press("Tab")
+                return target_date
             self._click_calendar_day(target_date)
-            expect(self.page.locator("#calendar_modal")).to_be_hidden(
-                timeout=self.timeout
-            )
+            expect(calendar).to_be_hidden(timeout=self.timeout)
             return target_date
 
     def _click_calendar_day(self, target_date: date) -> None:
@@ -187,6 +202,76 @@ class MPLegacyReservationFormPage:
         raise AssertionError(
             f"Calendar day {target_label!r} not found in #calendar_modal"
         )
+
+    @log_method_exceptions
+    def start_rental_now(
+        self,
+        email: str,
+        mobile: str,
+        first_name: str,
+        last_name: str,
+        renting_as_business: bool = False,
+        business_name: str | None = None,
+        days_from_today: int = 0,
+    ) -> date:
+        """Click **Rent Now** on the Legacy unit form (direct paid move-in).
+
+        Guest Email / Name / Mobile (and RAB Business Email / Name / Phone)
+        are **not** required on this page — they are filled on the rental
+        application (live 2026-09-21 Garden Grove). Still sets move-in date
+        and optional business checkbox. Skips Reserve This Space / hold
+        thank-you / confirmation email.
+        """
+        with allure.step("Wait for the unit Rent Now form"):
+            self._dismiss_banners()
+            rent_button = self.page.get_by_role(
+                "button", name="Rent Now", exact=True
+            )
+            expect(rent_button).to_be_visible(timeout=self.timeout)
+            self._dismiss_banners()
+
+        if renting_as_business:
+            # Unit Rent Now: only tick RAB. Business Email/Name/Phone are
+            # filled on the rental application (same as individual
+            # Email/Name/Mobile — live 2026-09-21 Garden Grove).
+            with allure.step(
+                f"Mark renting as a business"
+                + (f": {business_name}" if business_name else "")
+            ):
+                business_checkbox = self.page.get_by_role(
+                    "checkbox", name="I am renting as a business"
+                )
+                try:
+                    expect(business_checkbox).to_be_visible(timeout=self.timeout)
+                except AssertionError:
+                    with allure.step(
+                        "Business checkbox not visible - hard refresh and check again"
+                    ):
+                        self._hard_refresh()
+                        expect(business_checkbox).to_be_visible(timeout=self.timeout)
+                business_checkbox.check()
+
+        move_in_date = self.select_move_in_date(days_from_today)
+
+        with allure.step("Click Rent Now (guest details on application)"):
+            self._dismiss_banners()
+            expect(rent_button).to_be_visible(timeout=self.timeout)
+            arrived = self.page.locator("#idtenantemail")
+            max_attempts = 3
+            for attempt in range(max_attempts):
+                self._dismiss_banners()
+                rent_button.click()
+                try:
+                    expect(arrived).to_be_visible(
+                        timeout=self.timeout / max_attempts
+                    )
+                    break
+                except AssertionError:
+                    if attempt == max_attempts - 1:
+                        raise
+                    if not rent_button.is_visible():
+                        raise
+        return move_in_date
 
     @log_method_exceptions
     def reserve_unit(
@@ -304,18 +389,36 @@ class MPLegacyReservationFormPage:
                     # counts as invalid while pending, so a click right
                     # after filling is silently dropped (console only:
                     # "validPhoneNumber failed for field phone"). Wait for
-                    # that lookup for these digits; a refill with an
-                    # unchanged value may not re-trigger it, hence the pass.
+                    # that lookup for these digits; clear+refill to re-trigger
+                    # when a plain refill would not (live 2026-09-21 hold
+                    # thank-you after validate-phone timeout).
                     digits = re.sub(r"\D", "", field_value)
-                    try:
-                        with self.page.expect_response(
-                            lambda response: "/validate-phone/" in response.url
-                            and digits in re.sub(r"%[0-9A-Fa-f]{2}|\D", "", response.url),
-                            timeout=waits().medium,
-                        ):
-                            field.fill(field_value)
-                    except PlaywrightTimeoutError:
-                        pass
+                    validated = False
+                    for _phone_try in range(3):
+                        field.click()
+                        field.fill("")
+                        try:
+                            with self.page.expect_response(
+                                lambda response: "/validate-phone/" in response.url
+                                and digits
+                                in re.sub(
+                                    r"%[0-9A-Fa-f]{2}|\D", "", response.url
+                                ),
+                                timeout=waits().medium,
+                            ):
+                                field.fill(field_value)
+                            validated = True
+                            break
+                        except PlaywrightTimeoutError:
+                            self.page.wait_for_timeout(waits().poll_interval)
+                    if not validated:
+                        allure.attach(
+                            f"phone validate-phone did not complete for {digits}",
+                            name="phone-validation-timeout",
+                            attachment_type=allure.attachment_type.TEXT,
+                        )
+                        field.fill(field_value)
+                        self.page.wait_for_timeout(waits().settle_short)
 
             # This form's "Holding Space For MM:SS" countdown re-renders
             # the card on a live interval, which can silently swallow a
@@ -436,14 +539,13 @@ class MPLegacyReservationFormPage:
         guest: dict | None = None,
         extras: dict | None = None,
     ) -> None:
-        """The resumed reservation's rental application, up to payment.
+        """The rental application, up to payment.
         Confirmed live (2026-09-14, uat_storoutlet/Bellflower, reservation
-        64W1X4): it renders about 10 s after "Rent online now" changes the
-        URL; email, name and mobile come pre-filled from the reservation.
-        New since the Robot suite: a required "Account Password" (the rental
-        creates the online account), an alternate contact block that is
-        always shown, five "Additional Information" yes/no questions, a
-        Protection Plan and Renter Identity Verification before payment.
+        64W1X4): after Reserve → Rent online now, email/name/mobile are
+        pre-filled. After **Rent Now** they are empty and must be filled
+        from ``guest`` (live 2026-09-21 Garden Grove). Also: Account
+        Password, alternate contact, Additional Information, Protection
+        Plan and Renter Identity Verification before payment.
 
         extras (optional, walked stage/Garden Grove 2026-09-16): tick and
         fill military / lien holder / vehicle / emergency / authorized-access
@@ -462,6 +564,22 @@ class MPLegacyReservationFormPage:
         with allure.step("Fill the rental application"):
             expect(self.page.locator("#idtenantemail")).to_be_visible(timeout=self.timeout * 2)
             self._dismiss_banners()
+            # Rent Now leaves identity empty (unlike Reserve → Rent online
+            # now). Individual: Email / First / Last / Mobile. RAB: Business
+            # Email / Name / Phone + Business Representative — do not use
+            # tenant identity or First/Last/Mobile land in the rep block
+            # (live 2026-09-21 clickwrap RAB).
+            business = self.page.get_by_role(
+                "checkbox", name="I am renting as a business"
+            )
+            renting_as_business = (
+                business.count() > 0 and business.first.is_checked()
+            )
+            if guest is not None:
+                if renting_as_business:
+                    self._fill_business_identity(guest)
+                else:
+                    self._fill_tenant_identity(guest)
             password = self.page.locator("#idtenantpassword")
             if password.count() > 0 and password.is_visible() and not password.input_value():
                 password.fill(rental_data["account_password"])
@@ -497,6 +615,79 @@ class MPLegacyReservationFormPage:
             self._verify_id_later(rental_data)
             if guest is not None:
                 self._fill_business_representative(guest, rental_data)
+
+    @log_method_exceptions
+    def _fill_tenant_identity(self, guest: dict) -> None:
+        """Rental Agreement Information: Email / First / Last / Mobile.
+
+        Required after **Rent Now** (empty). After Reserve → Rent online now
+        these are usually pre-filled — only empty fields are written.
+        """
+        with allure.step(
+            f"Tenant identity: {guest['first_name']} {guest['last_name']}"
+        ):
+            email = self.page.locator("#idtenantemail")
+            if not (email.input_value() or "").strip():
+                email.fill(guest["email"])
+            # .first = tenant block (alternate / lien share the same labels
+            # but are filled later).
+            for name, value in (
+                ("First Name *", guest["first_name"]),
+                ("Last Name *", guest["last_name"]),
+            ):
+                field = self.page.get_by_role("textbox", name=name).first
+                if field.is_visible() and not (field.input_value() or "").strip():
+                    field.fill(value)
+            mobile = self.page.get_by_role("textbox", name="Mobile *").first
+            if mobile.is_visible() and not (mobile.input_value() or "").strip():
+                digits = re.sub(r"\D", "", guest["mobile"])
+                try:
+                    with self.page.expect_response(
+                        lambda response: "/validate-phone/" in response.url
+                        and digits
+                        in re.sub(r"%[0-9A-Fa-f]{2}|\D", "", response.url),
+                        timeout=waits().medium,
+                    ):
+                        mobile.fill(guest["mobile"])
+                except PlaywrightTimeoutError:
+                    mobile.fill(guest["mobile"])
+
+    @log_method_exceptions
+    def _fill_business_identity(self, guest: dict, business_name: str | None = None) -> None:
+        """RAB Rental Agreement Information: Business Email / Name / Phone.
+
+        Required after **Rent Now** (empty even when the unit-page RAB
+        checkbox carried over — live 2026-09-21 Garden Grove). After
+        Reserve → Rent online now these are usually pre-filled.
+        """
+        name = business_name or (
+            f"{guest['first_name']} {guest['last_name']} Business"
+        )
+        with allure.step(f"Business identity: {name}"):
+            for field_name, value in (
+                ("Business Email", guest["email"]),
+                ("Business Name", name),
+            ):
+                field = self.page.get_by_role("textbox", name=field_name).first
+                if field.count() and field.is_visible() and not (
+                    field.input_value() or ""
+                ).strip():
+                    field.fill(value)
+            phone = self.page.get_by_role("textbox", name="Business Phone").first
+            if phone.count() and phone.is_visible() and not (
+                phone.input_value() or ""
+            ).strip():
+                digits = re.sub(r"\D", "", guest["mobile"])
+                try:
+                    with self.page.expect_response(
+                        lambda response: "/validate-phone/" in response.url
+                        and digits
+                        in re.sub(r"%[0-9A-Fa-f]{2}|\D", "", response.url),
+                        timeout=waits().medium,
+                    ):
+                        phone.fill(guest["mobile"])
+                except PlaywrightTimeoutError:
+                    phone.fill(guest["mobile"])
 
     @log_method_exceptions
     def _answer_additional_questions(self, extras: dict) -> None:
@@ -710,7 +901,7 @@ class MPLegacyReservationFormPage:
         Grove under Super Lease: tick id_secondary_contactyes ("I would like
         to provide a secondary contact to receive lien notices") first - without
         it the Superlease PDF keeps the alternate block as N/A even when the
-        idalternate* fields were filled. Fictional Mailinator email and
+        idalternate* fields were filled. Gmail test-inbox email and
         (707)/(714) 555-01xx number from test_identities.new_additional_contact."""
         if self.page.locator('[id="id_secondary_contactyes"]').count():
             self._check_radio("id_secondary_contactyes")
@@ -802,7 +993,7 @@ class MPLegacyReservationFormPage:
         alternate contact's, so each field is the first empty, visible one of
         its name: the business address and alternate blocks are filled by the
         time this runs. The representative is the renter - the guest's
-        Mailinator email and fictional (714) 555-01xx mobile."""
+        Gmail address and fictional (714) 555-01xx mobile."""
         fill_business_representative(self.page, self.timeout, guest, rental_data)
 
     @log_method_exceptions
@@ -839,11 +1030,26 @@ class MPLegacyReservationFormPage:
         )
 
         # allure.step("Read the lease summary") — omitted from report; still read.
+        # Prefer the Lease Summary sidebar (same as Two-Step). Whole-body
+        # `#unit |` can match another unit on the page and fail the
+        # summary-vs-confirmation assert (live 2026-09-21: load139 vs load138).
         total_pattern = re.compile(r"Total Cost to Move-in:\s*\$([\d,]+\.\d{2})")
+        sidebar = self.page.locator(
+            ".unit-sidebarwrapper:not(:has(.unit-sidebarwrapper))"
+        ).first
+
+        def summary_text() -> str:
+            try:
+                if sidebar.count() and sidebar.is_visible():
+                    return sidebar.inner_text()
+            except Exception:
+                pass
+            return self.page.locator("body").inner_text()
+
         readings: list[str | None] = []
         text = ""
         for _ in range(int(self.timeout / 500)):
-            text = self.page.locator("body").inner_text()
+            text = summary_text()
             total = total_pattern.search(text)
             readings.append(total.group(1) if total else None)
             if readings[-1] and len(readings) >= 6 and len(set(readings[-6:])) == 1:
@@ -851,7 +1057,18 @@ class MPLegacyReservationFormPage:
             self.page.wait_for_timeout(waits().poll_interval)
         else:
             raise AssertionError(f"Lease Summary total never settled: {readings[-6:]}")
-        space = re.search(r"#(\S+)\s*\|", text)
+        # Prefer .unit-size ("#load141 | 6' x 6'") over any other #unit | on
+        # the sidebar / page (recommended units caused load142 vs load141 —
+        # live 2026-09-21 non-tenant clickwrap).
+        space = None
+        try:
+            unit_size = sidebar.locator(".unit-size").first
+            if sidebar.count() and unit_size.count() and unit_size.is_visible():
+                space = re.search(r"#(\S+)\s*\|", unit_size.inner_text())
+        except Exception:
+            space = None
+        if space is None:
+            space = re.search(r"#(\S+)\s*\|", text)
         charges = parse_charges_from_summary_text(text)
         deposit = security_deposit_amount(charges)
         if deposit is None:
@@ -925,9 +1142,21 @@ class MPLegacyReservationFormPage:
         errorMessage=WEBSITE RENTAL COMM APP Pre on a rental that succeeded
         (2026-09-14) - not treated as a failure. Returns the space number."""
         with allure.step("Rental confirmed"):
-            expect(
-                self.page.get_by_text(re.compile(r"You['’]re Ready to Move-In!|You['’]ve got your space!")).first
-            ).to_be_visible(timeout=self.timeout * 4)
+            success = self.page.get_by_text(
+                re.compile(r"You['’]re Ready to Move-In!|You['’]ve got your space!")
+            ).first
+            oops = self.page.get_by_text(
+                re.compile(r"Oops\.\.\.\s*your rental did not go through", re.I)
+            ).first
+            # Race success vs failure so a declined payment fails in seconds,
+            # not after self.timeout * 4 (~4 min).
+            expect(success.or_(oops)).to_be_visible(timeout=self.timeout * 4)
+            if oops.is_visible() and not success.is_visible():
+                raise AssertionError(
+                    'The storefront answered with "Oops... your rental did not go through" '
+                    f"(URL {self.page.url})"
+                )
+            expect(success).to_be_visible(timeout=waits().short)
             match = re.search(r"[?&]unit_number=([^&#]+)", self.page.url)
             if "type=rental" not in self.page.url or not match:
                 raise AssertionError(f"Not a rental confirmation page: {self.page.url}")

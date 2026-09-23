@@ -1,0 +1,3 @@
+# Generated Autotest .docx uploads (rebuilt by ensure / create_template).
+*.docx
+!.gitkeep

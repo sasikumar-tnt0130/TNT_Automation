@@ -164,8 +164,9 @@ def fill_business_representative(page: Page, timeout: float, guest: dict, rental
     it's filled (Legacy on 2026-09-14, Two-Step on 2026-09-15). Its labels
     repeat other blocks' (alternate contact, address), so each field is the
     first empty, visible one of its name. The representative is the renter -
-    the guest's Mailinator email and fictional (714) 555-01xx mobile. No-op
-    when the block isn't shown."""
+    the guest's Gmail address and fictional (714) 555-01xx mobile. No-op
+    when the block isn't shown. Fields already filled are left alone.
+    """
     heading = page.get_by_role("heading", name="Business Representative Information")
     if heading.count() == 0 or not heading.first.is_visible():
         return
@@ -178,11 +179,21 @@ def fill_business_representative(page: Page, timeout: float, guest: dict, rental
                 return field
         return None
 
+    def any_visible_filled(role: str, name: str) -> bool:
+        fields = page.get_by_role(role, name=name, exact=True)
+        for index in range(fields.count()):
+            field = fields.nth(index)
+            if field.is_visible() and (field.input_value() or "").strip():
+                return True
+        return False
+
     def fill(name: str, value: str, required: bool = True) -> None:
         field = first_empty("textbox", name)
         if field is None:
-            if required:
-                raise AssertionError(f"No empty '{name}' field for the business representative")
+            if required and not any_visible_filled("textbox", name):
+                raise AssertionError(
+                    f"No empty '{name}' field for the business representative"
+                )
             return
         field.fill(value)
 
@@ -190,18 +201,22 @@ def fill_business_representative(page: Page, timeout: float, guest: dict, rental
         fill("Email *", guest["email"])
         mobile = first_empty("textbox", "Mobile *")
         if mobile is None:
-            raise AssertionError("No empty 'Mobile *' field for the business representative")
-        digits = re.sub(r"\D", "", guest["mobile"])
-        # The same async phone check as the reservation form's Mobile field.
-        try:
-            with page.expect_response(
-                lambda response: "/validate-phone/" in response.url
-                and digits in re.sub(r"%[0-9A-Fa-f]{2}|\D", "", response.url),
-                timeout=waits().medium,
-            ):
+            if not any_visible_filled("textbox", "Mobile *"):
+                raise AssertionError(
+                    "No empty 'Mobile *' field for the business representative"
+                )
+        else:
+            digits = re.sub(r"\D", "", guest["mobile"])
+            # The same async phone check as the reservation form's Mobile field.
+            try:
+                with page.expect_response(
+                    lambda response: "/validate-phone/" in response.url
+                    and digits in re.sub(r"%[0-9A-Fa-f]{2}|\D", "", response.url),
+                    timeout=waits().medium,
+                ):
+                    mobile.fill(guest["mobile"])
+            except PlaywrightTimeoutError:
                 mobile.fill(guest["mobile"])
-        except PlaywrightTimeoutError:
-            pass
         fill("First Name *", guest["first_name"])
         fill("Last Name *", guest["last_name"])
         # The address fields are the Legacy block's; filled where present.

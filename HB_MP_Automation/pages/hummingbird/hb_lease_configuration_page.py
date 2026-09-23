@@ -135,8 +135,14 @@ class HBLeaseConfigurationPage:
               throw new Error('HbBottomActionBar buttonClicked not found');
             }"""
         )
-        self.page.wait_for_timeout(waits().short)
-        self._dismiss_confirm_modal()
+        # Prefer modal dismiss signal over a blind settle sleep.
+        try:
+            expect(modal.first).to_be_hidden(timeout=waits().short)
+        except AssertionError:
+            self._dismiss_confirm_modal()
+        else:
+            # Already gone; still clear any leftover clone.
+            self._dismiss_confirm_modal()
 
     def _set_switch(
         self, switch, *, enable: bool, action_when_enabling: str = "Activate"

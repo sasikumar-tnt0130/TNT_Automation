@@ -1122,6 +1122,11 @@ class MPUnitSearchPage:
             legacy_button = self.page.get_by_role(
                 "button", name="Reserve This Space", exact=True
             )
+            # Confirmed live 2026-09-21 (uat_storoutlet/Bellflower): Legacy
+            # /rent_or_reserve/ also shows Rent Now next to Reserve This Space.
+            legacy_rent_now = self.page.get_by_role(
+                "button", name="Rent Now", exact=True
+            )
             # A variant of the Legacy form (seen once, 2026-09-14, uat_storoutlet/
             # Bellflower, mobile): same "Reserve This Space" heading, but the
             # button reads "Submit" (see MPLegacyReservationFormPage.reserve_unit).
@@ -1130,6 +1135,9 @@ class MPUnitSearchPage:
                 "button", name="Reserve Now", exact=True
             )
             expect(
-                legacy_button.first.or_(two_step_button.first).or_(legacy_submit.first).first
+                legacy_button.first.or_(legacy_rent_now.first)
+                .or_(two_step_button.first)
+                .or_(legacy_submit.first)
+                .first
             ).to_be_visible(timeout=timeout if timeout is not None else self.timeout)
             return "two_step" if two_step_button.first.is_visible() else "legacy"

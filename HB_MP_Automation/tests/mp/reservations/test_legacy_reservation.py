@@ -1,27 +1,20 @@
 import allure
 import pytest
 
-from common_utils.lease_configuration_setup import LeaseConfigurationSetup
 from common_utils.mp_legacy_reservation_setup import MPLegacyReservationSetup
+from tests.mp.reservations._helpers import ensure_legacy_reservation_flow
 
 
-@pytest.fixture(scope="class")
-def _legacy_flow_configured(hb_admin_session, environment_config, app_config) -> None:
-    """One-time admin setup for this class on the module HB admin session."""
-    lease_configuration = LeaseConfigurationSetup(
-        hb_admin_session, environment_config, app_config
-    )
-    lease_configuration.disable_two_step_clickwrap_and_super_lease()
-    if environment_config.landing_page_layout:
-        lease_configuration.set_landing_page_layout(
-            environment_config.landing_page_layout
-        )
-    lease_configuration.flush_website_cache()
-
+@pytest.fixture(scope="module", autouse=True)
+def precondition(hb_admin_session, environment_config, app_config) -> None:
+    """Once for this file: APW + Legacy traditional + landing layout + Clear Cache."""
+    # ensure_legacy_reservation_flow(
+    #     hb_admin_session, environment_config, app_config
+    # )
+    pass
 
 @allure.feature("MP Reservation")
 @allure.story("Legacy Flow: Reservation")
-@pytest.mark.usefixtures("_legacy_flow_configured")
 class TestLegacyReservation:
     # This suite exercises the Legacy Flow specifically, which requires
     # Two-Step Rental disabled on the property (the storefront reaches a
@@ -32,6 +25,7 @@ class TestLegacyReservation:
     # Clickwrap/Super Lease (confirmed live 2026-09-07) - only converting
     # a reservation to a rental is affected by those - but they're
     # disabled here too since "Legacy Flow" means neither is active.
+    # Precondition matches rentals ensure_legacy_traditional (+ landing layout).
 
     @allure.title("Individual reservation can be completed - Desktop")
     @pytest.mark.smoke

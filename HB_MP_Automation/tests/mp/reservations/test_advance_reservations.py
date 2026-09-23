@@ -11,11 +11,14 @@ from datetime import date
 import allure
 import pytest
 
-from common_utils.lease_configuration_setup import LeaseConfigurationSetup
 from common_utils.mp_legacy_reservation_setup import MPLegacyReservationSetup
 from common_utils.mp_two_step_reservation_setup import MPTwoStepReservationSetup
 from config.config_reader import load_property
 from pages.common.hb_lead_management_page import HBLeadManagementPage
+from tests.mp.reservations._helpers import (
+    ensure_legacy_reservation_flow,
+    ensure_two_step_superlease,
+)
 
 
 def _advance_days(configured: int | None) -> int:
@@ -25,27 +28,21 @@ def _advance_days(configured: int | None) -> int:
 
 
 @pytest.fixture(scope="module")
-def _legacy_flow_configured(hb_admin_session, environment_config, app_config) -> None:
-    setup = LeaseConfigurationSetup(
+def _legacy_precondition(hb_admin_session, environment_config, app_config) -> None:
+    """APW + Legacy traditional + layout + Clear Cache (same as rentals)."""
+    ensure_legacy_reservation_flow(
         hb_admin_session, environment_config, app_config
     )
-    setup.disable_two_step_clickwrap_and_super_lease()
-    setup.flush_website_cache()
 
 
 @pytest.fixture(scope="module")
-def _two_step_flow_configured(
+def _two_step_precondition(
     hb_admin_session, environment_config, app_config, two_step_property
 ) -> None:
-    setup = LeaseConfigurationSetup(
-        hb_admin_session,
-        environment_config,
-        app_config,
-        property_name=two_step_property.lease_configuration_property_name,
-        fms_property_name=two_step_property.fms_property_name,
+    """APW + Two-Step/CW/SL + days + Clear Cache (same as rentals)."""
+    ensure_two_step_superlease(
+        hb_admin_session, environment_config, app_config, two_step_property
     )
-    setup.enable_two_step_clickwrap_and_super_lease()
-    setup.flush_website_cache()
 
 
 def _assert_hb_lead(
@@ -80,7 +77,7 @@ def _default_hb_property(app_config, environment: str, environment_config) -> st
 
 @allure.feature("MP Reservation")
 @allure.story("Advance reservation (future move-in date)")
-@pytest.mark.usefixtures("_legacy_flow_configured")
+@pytest.mark.usefixtures("_legacy_precondition")
 class TestLegacyAdvanceReservation:
     @allure.title("Legacy Flow-Advance reservation with a future move-in date")
     @pytest.mark.smoke
@@ -181,7 +178,7 @@ class TestLegacyAdvanceReservation:
 
 @allure.feature("MP Reservation")
 @allure.story("Advance reservation (future move-in date) - Two-Step")
-@pytest.mark.usefixtures("_two_step_flow_configured")
+@pytest.mark.usefixtures("_two_step_precondition")
 class TestTwoStepAdvanceReservation:
     @allure.title("2Step Flow-Advance reservation with a future move-in date")
     @pytest.mark.smoke

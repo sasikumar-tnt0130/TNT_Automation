@@ -10,6 +10,7 @@ from common_utils.wrapper_methods import (
 )
 from config.config_reader import PropertyConfig
 from pages.mariposa.mp_unit_search_page import MPUnitSearchPage
+from tests.mp.reservations._helpers import ensure_two_step_superlease
 
 REPORTS_DIR = Path(__file__).resolve().parents[3] / "reports"
 
@@ -52,6 +53,16 @@ def _save_layout_screenshot(
     return path
 
 
+@pytest.fixture(scope="module", autouse=True)
+def precondition(
+    hb_admin_session, environment_config, app_config, two_step_property
+) -> None:
+    """Once: APW + Two-Step/CW/SL + days + Clear Cache (same as rentals)."""
+    ensure_two_step_superlease(
+        hb_admin_session, environment_config, app_config, two_step_property
+    )
+
+
 def _lease_setup(hb_login_page, environment_config, app_config, prop: PropertyConfig):
     """LeaseConfigurationSetup aimed at two_step_property, not Legacy."""
     return LeaseConfigurationSetup(
@@ -63,21 +74,8 @@ def _lease_setup(hb_login_page, environment_config, app_config, prop: PropertyCo
     )
 
 
-@pytest.fixture(scope="class")
-def _two_step_flow_configured(
-    hb_admin_session, environment_config, app_config, two_step_property
-) -> None:
-    """One-time admin setup on the module HB admin session."""
-    setup = _lease_setup(
-        hb_admin_session, environment_config, app_config, two_step_property
-    )
-    setup.enable_two_step_clickwrap_and_super_lease()
-    setup.flush_website_cache()
-
-
 @allure.feature("MP Reservation")
 @allure.story("Two-Step Flow: Landing Page Layout x Value Tier Layout combinations")
-@pytest.mark.usefixtures("_two_step_flow_configured")
 class TestTwoStepLayoutCombinations:
     # See TestLayoutCombinations (test_legacy_layout_combinations.py) for
     # why every combination is exercised, and why this only drives up to
@@ -99,14 +97,15 @@ class TestTwoStepLayoutCombinations:
         self, hb_admin_session, environment_config, app_config, two_step_property
     ):
         yield
-        lease_configuration = _lease_setup(
-            hb_admin_session, environment_config, app_config, two_step_property
-        )
-        lease_configuration.set_landing_and_value_tier_layouts(
-            two_step_property.landing_page_layout,
-            two_step_property.value_tier_layout,
-        )
-        lease_configuration.flush_website_cache()
+        pass
+        # lease_configuration = _lease_setup(
+        #     hb_admin_session, environment_config, app_config, two_step_property
+        # )
+        # lease_configuration.set_landing_and_value_tier_layouts(
+        #     two_step_property.landing_page_layout,
+        #     two_step_property.value_tier_layout,
+        # )
+        # lease_configuration.flush_website_cache()
 
     @pytest.mark.parametrize("landing_layout,tier_layout", LAYOUT_COMBINATIONS)
     @allure.title(
@@ -130,7 +129,7 @@ class TestTwoStepLayoutCombinations:
         lease_configuration.set_landing_and_value_tier_layouts(
             landing_layout, tier_layout
         )
-        lease_configuration.flush_website_cache()
+        # lease_configuration.flush_website_cache()
 
         timeout = app_config.getint("browser", "timeout")
         rental_page = MPUnitSearchPage(
@@ -202,7 +201,7 @@ class TestTwoStepLayoutCombinations:
         lease_configuration.set_landing_and_value_tier_layouts(
             landing_layout, tier_layout
         )
-        lease_configuration.flush_website_cache()
+        # lease_configuration.flush_website_cache()
 
         property_url = property_landing_page_url(
             environment_config.mp_base_url,
