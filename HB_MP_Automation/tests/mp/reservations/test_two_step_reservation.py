@@ -1,29 +1,22 @@
 import allure
 import pytest
 
-from common_utils.lease_configuration_setup import LeaseConfigurationSetup
 from common_utils.mp_two_step_reservation_setup import MPTwoStepReservationSetup
+from tests.mp.reservations._helpers import ensure_two_step_superlease
 
 
-@pytest.fixture(scope="class")
-def _two_step_flow_configured(
+@pytest.fixture(scope="module", autouse=True)
+def precondition(
     hb_admin_session, environment_config, app_config, two_step_property
 ) -> None:
-    """One-time admin setup on the module HB admin session."""
-    setup = LeaseConfigurationSetup(
-        hb_admin_session,
-        environment_config,
-        app_config,
-        property_name=two_step_property.lease_configuration_property_name,
-        fms_property_name=two_step_property.fms_property_name,
+    """Once for this file: APW + Two-Step/Clickwrap/Super Lease + days + Clear Cache."""
+    ensure_two_step_superlease(
+        hb_admin_session, environment_config, app_config, two_step_property
     )
-    setup.enable_two_step_clickwrap_and_super_lease()
-    setup.flush_website_cache()
 
 
 @allure.feature("MP Reservation")
 @allure.story("Two-Step Flow: Reservation")
-@pytest.mark.usefixtures("_two_step_flow_configured")
 class TestTwoStepReservation:
     # Confirmed live (2026-09-08, stage): environment_config's own
     # default property (Hamilton Self Storage/Garden Grove) is a
@@ -33,6 +26,7 @@ class TestTwoStepReservation:
     # wait), not a config toggle. This suite runs against
     # properties.ini two_step_property (e.g. Rutland/Lightning Storage)
     # via the two_step_property fixture.
+    # Precondition matches rentals ensure_two_step_superlease.
 
     @allure.title("Individual reservation can be completed - Desktop")
     @pytest.mark.smoke

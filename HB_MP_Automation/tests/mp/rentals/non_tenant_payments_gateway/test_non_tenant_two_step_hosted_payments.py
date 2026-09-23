@@ -1,7 +1,10 @@
 """Hosted card formats — Non-Tenant Payments / Two-Step.
 
-Valid card data (PAN 16/19, expiry YY/YYYY, CVV 3/4) must complete the rental
+Valid card data (PAN 16, expiry YY/YYYY, CVV 3/4) must complete the rental
 and pass rental confirmation (storefront + emails + HB).
+
+19-digit PANs are omitted: Authorize.Net / non-tenant sandbox does not
+accept PAN_19 (6210945888040000007).
 """
 
 from __future__ import annotations
@@ -10,14 +13,44 @@ import allure
 import pytest
 
 from common_utils.mp_rental_cases import RentalCase
+from tests.mp.rentals._helpers import (
+    ensure_module_payment_gateways,
+    ensure_two_step_superlease,
+)
 from tests.mp.rentals._hosted_card_ui import (
     card_for_cvv_3,
     card_for_cvv_4,
     card_for_expiry_yy,
     card_for_expiry_yyyy,
     card_for_pan_16,
-    card_for_pan_19,
 )
+
+
+@pytest.fixture(scope="module", autouse=True)
+def precondition(
+    hb_admin_session,
+    environment,
+    environment_config,
+    app_config,
+    two_step_property,
+    payment_gateways,
+    gateway_profile,
+    module_payment_gateways_ready,
+):
+    """Once for this file: Two-Step signing + payment gateways."""
+    ensure_two_step_superlease(
+        hb_admin_session, environment_config, app_config, two_step_property
+    )
+    ensure_module_payment_gateways(
+        hb_admin_session,
+        environment,
+        environment_config,
+        app_config,
+        payment_gateways,
+        gateway_profile,
+        two_step=True,
+        ready=module_payment_gateways_ready,
+    )
 
 
 @allure.feature("MP Rentals")
@@ -28,8 +61,6 @@ from tests.mp.rentals._hosted_card_ui import (
 )
 @pytest.mark.mp_rental
 @pytest.mark.non_tenant_payments_gateway
-@pytest.mark.two_step_superlease
-@pytest.mark.usefixtures("two_step_superlease_checked")
 class TestNonTenantTwoStepHostedPayments:
     @allure.title("2Step-Non-Tenant Payments-16-digit card-rental confirmation")
     @pytest.mark.card
@@ -40,23 +71,9 @@ class TestNonTenantTwoStepHostedPayments:
         self, rental_case_runner, environment_config
     ) -> None:
         rental_case_runner(
-            RentalCase(payment="card", autopay=False, view="desktop", rab=False),
+            RentalCase(payment="card", autopay=False, view="desktop", rab=False, reserve=False),
             two_step=True,
             card=card_for_pan_16(environment_config),
-        )
-
-    @allure.title("2Step-Non-Tenant Payments-19-digit card-rental confirmation")
-    @pytest.mark.card
-    @pytest.mark.no_autopay
-    @pytest.mark.desktop
-    @pytest.mark.individual
-    def test_two_step_19_digit_card_rental_confirmation(
-        self, rental_case_runner, environment_config
-    ) -> None:
-        rental_case_runner(
-            RentalCase(payment="card", autopay=False, view="desktop", rab=False),
-            two_step=True,
-            card=card_for_pan_19(environment_config),
         )
 
     @allure.title("2Step-Non-Tenant Payments-Expiry MMYY-rental confirmation")
@@ -68,7 +85,7 @@ class TestNonTenantTwoStepHostedPayments:
         self, rental_case_runner, environment_config
     ) -> None:
         rental_case_runner(
-            RentalCase(payment="card", autopay=False, view="desktop", rab=False),
+            RentalCase(payment="card", autopay=False, view="desktop", rab=False, reserve=False),
             two_step=True,
             card=card_for_expiry_yy(environment_config),
         )
@@ -82,7 +99,7 @@ class TestNonTenantTwoStepHostedPayments:
         self, rental_case_runner, environment_config
     ) -> None:
         rental_case_runner(
-            RentalCase(payment="card", autopay=False, view="desktop", rab=False),
+            RentalCase(payment="card", autopay=False, view="desktop", rab=False, reserve=False),
             two_step=True,
             card=card_for_expiry_yyyy(environment_config),
         )
@@ -96,7 +113,7 @@ class TestNonTenantTwoStepHostedPayments:
         self, rental_case_runner, environment_config
     ) -> None:
         rental_case_runner(
-            RentalCase(payment="card", autopay=False, view="desktop", rab=False),
+            RentalCase(payment="card", autopay=False, view="desktop", rab=False, reserve=False),
             two_step=True,
             card=card_for_cvv_3(environment_config),
         )
@@ -110,7 +127,7 @@ class TestNonTenantTwoStepHostedPayments:
         self, rental_case_runner, environment_config
     ) -> None:
         rental_case_runner(
-            RentalCase(payment="card", autopay=False, view="desktop", rab=False),
+            RentalCase(payment="card", autopay=False, view="desktop", rab=False, reserve=False),
             two_step=True,
             card=card_for_cvv_4(environment_config),
         )

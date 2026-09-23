@@ -100,11 +100,33 @@ class HBPaymentProcessingPage:
     def select_property(self, property_name: str) -> None:
         with allure.step(f"Select payment processing property: {property_name}"):
             loads_before = len(self._connection_loads)
+            property_select = self.page.get_by_role(
+                "textbox", name="Select Property", exact=True
+            )
+            try:
+                current = (property_select.input_value() or "").strip()
+            except Exception:
+                current = ""
+            # Settings nav no-ops when this property is already shown — then
+            # no new GET .../connections fires. Waiting the full poll budget
+            # (~10s) and reloading made "config check" look stuck (live
+            # 2026-09-22 module CC→ACH / re-ensure).
+            already_selected = bool(
+                current and property_name.casefold() in current.casefold()
+            )
             self.nav.select_property(property_name)
             self._close_open_menus()
             expect(
                 self.page.get_by_role("button", name="Credit Cards", exact=True)
             ).to_be_visible(timeout=self.timeout)
+            if already_selected and self._connection_loads:
+                self.connections = self._connection_loads[-1]
+                allure.attach(
+                    repr(self.connections),
+                    name="configured connections (reused — property already selected)",
+                    attachment_type=allure.attachment_type.TEXT,
+                )
+                return
             if not self._wait_for_connections_load(loads_before):
                 # Picking the property the page already shows loads nothing
                 # new, and the newest load on record can be another
@@ -249,26 +271,29 @@ class HBPaymentProcessingPage:
             # no request and the form stayed open - the panel's own messages
             # then say why, reported instead of a bare timeout.
             messages = panel.locator(".v-messages__message, .error--text").filter(visible=True)
-            locked = False
-            for _ in range(int(self.timeout / 500)):
-                if self._merchant_input(method).is_disabled():
-                    locked = True
-                    break
-                if messages.count():
-                    break
-                self.page.wait_for_timeout(waits().poll_interval)
-            if not locked:
-                shown = sorted({" ".join(text.split()) for text in messages.all_inner_texts() if text.strip()})
+            merchant_input = self._merchant_input(method)
+            try:
+                expect(merchant_input).to_be_disabled(timeout=self.timeout)
+            except AssertionError:
+                shown = sorted(
+                    {
+                        " ".join(text.split())
+                        for text in messages.all_inner_texts()
+                        if text.strip()
+                    }
+                )
                 raise AssertionError(
                     f"{method}: Save didn't set the {merchant} integration - the form says {shown or 'nothing'}"
-                )
+                ) from None
             self.assert_merchant(method, merchant)
             if self._wait_for_connections_load(loads_before):
                 self.connections = self._connection_loads[-1]
 
     @log_method_exceptions
     def _wait_for_connections_load(self, loads_before: int) -> bool:
-        for _ in range(40):
+        # ~2.5s (10 × 250ms) — enough for a normal connections GET; the old
+        # 40-iter wait (~10s) dominated "config already matched" re-checks.
+        for _ in range(10):
             if len(self._connection_loads) > loads_before:
                 return True
             self.page.wait_for_timeout(waits().poll_interval)
@@ -377,17 +402,28 @@ class HBPaymentProcessingPage:
             return "added" if shown is None else "replaced"
 
     @log_method_exceptions
-    def ensure_gateways(self, gateways) -> dict[str, str]:
+    def ensure_gateways(
+        self, gateways, *, close_settings: bool = True
+    ) -> dict[str, str]:
         """ensure_integration for each config_reader.GatewayConfig on the
         selected property, always with all of its settings (a script that
         dropped not_compared once replaced an integration, 2026-09-15).
-        Returns {gateway key: "added" / "matched" / "replaced"}."""
-        return {
+        Returns {gateway key: "added" / "matched" / "replaced"}.
+
+        When ``close_settings`` is True (default), closes Settings after
+        the last gateway (project one-open / one-close). Pass False when
+        the caller will configure more Settings pages on the same panel
+        (e.g. sibling properties in one payment-gateways batch).
+        """
+        outcomes = {
             gateway.key: self.ensure_integration(
                 gateway.method, gateway.merchant, gateway.fields, gateway.optional, gateway.not_compared
             )
             for gateway in gateways
         }
+        if close_settings:
+            self.nav.close_settings_panel()
+        return outcomes
 
     @log_method_exceptions
     def direct_deposit_enabled(self) -> bool:

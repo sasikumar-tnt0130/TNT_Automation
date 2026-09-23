@@ -7,7 +7,7 @@ None; this file is what selects Tenant Payments for every test here.
 import pytest
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def gateway_profile() -> str:
     """Tenant Payments card + ACH (environments.ini profile=tenant_payments)."""
     return "tenant_payments"

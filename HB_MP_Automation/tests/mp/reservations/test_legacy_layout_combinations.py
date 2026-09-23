@@ -8,6 +8,7 @@ from common_utils.wrapper_methods import (
     save_confirmation_screenshot,
 )
 from pages.mariposa.mp_unit_search_page import MPUnitSearchPage
+from tests.mp.reservations._helpers import ensure_legacy_traditional
 
 REPORTS_DIR = Path(__file__).resolve().parents[3] / "reports"
 
@@ -23,6 +24,15 @@ LAYOUT_COMBINATIONS = [
     ("Grid View", "List View"),
     ("List View", "List View"),
 ]
+
+
+@pytest.fixture(scope="module", autouse=True)
+def precondition(hb_admin_session, environment_config, app_config) -> None:
+    """Once: APW + Traditional (Two-Step/CW/SL off) + Clear Cache.
+
+    Landing/tier layouts are set per test — do not force env landing layout.
+    """
+    ensure_legacy_traditional(hb_admin_session, environment_config, app_config)
 
 
 def _layout_shot_name(landing_layout: str, tier_layout: str, step: str) -> str:
@@ -118,16 +128,17 @@ class TestLayoutCombinations:
     @pytest.fixture(autouse=True)
     def _restore_layout(self, hb_admin_session, environment_config, app_config):
         yield
-        lease_configuration = LeaseConfigurationSetup(
-            hb_admin_session, environment_config, app_config
-        )
-        # Use the combined helper so restore still works when a Default
-        # case left Value Tier Layout hidden on the FMS form.
-        lease_configuration.set_landing_and_value_tier_layouts(
-            environment_config.landing_page_layout,
-            environment_config.value_tier_layout,
-        )
-        lease_configuration.flush_website_cache()
+        pass
+        # lease_configuration = LeaseConfigurationSetup(
+        #     hb_admin_session, environment_config, app_config
+        # )
+        # # Use the combined helper so restore still works when a Default
+        # # case left Value Tier Layout hidden on the FMS form.
+        # lease_configuration.set_landing_and_value_tier_layouts(
+        #     environment_config.landing_page_layout,
+        #     environment_config.value_tier_layout,
+        # )
+        # lease_configuration.flush_website_cache()
 
     @pytest.mark.parametrize("landing_layout,tier_layout", LAYOUT_COMBINATIONS)
     @allure.title(
@@ -150,7 +161,7 @@ class TestLayoutCombinations:
         lease_configuration.set_landing_and_value_tier_layouts(
             landing_layout, tier_layout
         )
-        lease_configuration.flush_website_cache()
+        # lease_configuration.flush_website_cache()
 
         timeout = app_config.getint("browser", "timeout")
         rental_page = MPUnitSearchPage(
@@ -198,7 +209,7 @@ class TestLayoutCombinations:
         lease_configuration.set_landing_and_value_tier_layouts(
             landing_layout, tier_layout
         )
-        lease_configuration.flush_website_cache()
+        # lease_configuration.flush_website_cache()
 
         timeout = app_config.getint("browser", "timeout")
         rental_page = MPUnitSearchPage(

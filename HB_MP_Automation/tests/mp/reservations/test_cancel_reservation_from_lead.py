@@ -5,12 +5,22 @@ import pytest
 
 from common_utils.mp_two_step_reservation_setup import MPTwoStepReservationSetup
 from pages.common.hb_lead_management_page import HBLeadManagementPage
+from tests.mp.reservations._helpers import ensure_two_step_superlease
+
+
+@pytest.fixture(scope="module", autouse=True)
+def precondition(
+    hb_admin_session, environment_config, app_config, two_step_property
+) -> None:
+    """Once: APW + Two-Step/CW/SL + days + Clear Cache (same as rentals)."""
+    ensure_two_step_superlease(
+        hb_admin_session, environment_config, app_config, two_step_property
+    )
 
 
 @allure.title("A storefront reservation can be cancelled from its lead in HB")
 @allure.feature("MP Reservations and Rentals")
 @allure.story("Reserve a Space in Mariposa + Retire a Lead From HummingBird")
-@pytest.mark.usefixtures("two_step_superlease_checked")
 def test_cancel_storefront_reservation_from_lead(
     page,
     environment_config,

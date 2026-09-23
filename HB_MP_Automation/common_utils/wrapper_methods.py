@@ -47,40 +47,88 @@ def confirmation_dir_for_current_test(
     return reports_dir / "confirmations" / f"{test_name}-{timestamp}"
 
 
-def save_confirmation_screenshot(page: Page, path: Path, allure_name: str) -> None:
+def save_confirmation_screenshot(
+    page: Page, path: Path, allure_name: str, *, attach_allure: bool = True
+) -> None:
     """Screenshots the current page (e.g. a reservation confirmation)
-    and both saves it to `path` and attaches it to the Allure report -
-    the same kind of visual record a failure already gets via
-    conftest's own failure-screenshot hook, but for a successful
-    outcome worth keeping proof of too."""
+    and saves it to ``path``. Viewport only — full_page on thank-you /
+    rental forms is slow and rarely needed for the report.
+
+    When ``attach_allure`` is true (default), also attaches to Allure —
+    set false when Rent-it only writes the file so Verify rental
+    confirmation emails can attach it next to the matching email.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    page.screenshot(path=str(path), full_page=True)
+    png = page.screenshot(type="png", full_page=False)
+    path.write_bytes(png)
+    if attach_allure:
+        allure.attach(
+            png,
+            name=allure_name,
+            attachment_type=allure.attachment_type.PNG,
+        )
+
+
+def attach_saved_screenshot(path: Path, allure_name: str) -> bool:
+    """Attach an existing PNG to Allure. Returns True when the file was found."""
+    if not path.is_file():
+        return False
     allure.attach(
-        path.read_bytes(), name=allure_name, attachment_type=allure.attachment_type.PNG
+        path.read_bytes(),
+        name=allure_name,
+        attachment_type=allure.attachment_type.PNG,
     )
+    return True
 
 
 def save_email_screenshot(
     context: BrowserContext, html: str, path: Path, allure_name: str
 ) -> None:
-    """Renders a Mailinator email's HTML body and screenshots it.
+    """Renders an email's HTML body and screenshots the whole message.
 
     Uses a temporary tab on the caller's context (same Chromium window) so
     headed runs do not open a third browser window for each email shot.
+
+    ``domcontentloaded`` (not ``load``) avoids hanging on tracking pixels /
+    remote images. The tab is then sized to the document so the shot includes
+    the body below the first screen.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     email_page = context.new_page()
+    png = b""
     try:
-        email_page.set_content(html, wait_until="load")
-        email_page.screenshot(path=str(path), full_page=True)
+        # Timeout: remote assets in email HTML must not block the suite.
+        # Stop at domcontentloaded. Waiting for "load" sits on tracking
+        # pixels that never finish.
+        email_page.set_content(html, wait_until="domcontentloaded", timeout=15_000)
+        height = email_page.evaluate(
+            """() => Math.ceil(Math.max(
+                document.documentElement.scrollHeight || 0,
+                document.body ? document.body.scrollHeight : 0,
+                800
+            ))"""
+        )
+        height = min(max(int(height), 800), 9000)
+        full_page = True
+        try:
+            width = (email_page.viewport_size or {}).get("width") or 1280
+            email_page.set_viewport_size({"width": int(width), "height": height})
+            full_page = False
+        except Exception:
+            pass
+        png = email_page.screenshot(type="png", full_page=full_page)
+        path.write_bytes(png)
     finally:
         try:
             email_page.close()
         except Exception:
             pass
-    allure.attach(
-        path.read_bytes(), name=allure_name, attachment_type=allure.attachment_type.PNG
-    )
+    if png:
+        allure.attach(
+            png,
+            name=allure_name,
+            attachment_type=allure.attachment_type.PNG,
+        )
 
 
 def first_visible(locator: Locator) -> Locator:

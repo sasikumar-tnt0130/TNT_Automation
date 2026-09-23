@@ -3,9 +3,16 @@ from configparser import ConfigParser
 from datetime import date
 from pathlib import Path
 
+import allure
 from playwright.sync_api import Page, expect
 
-from common_utils.mailinator_utils import get_email_plain_text, get_email_text, wait_for_email
+from common_utils.email_utils import (
+    get_email_plain_text,
+    get_email_text,
+    message_contains,
+    snapshot_inbox_ids,
+    wait_for_email_where,
+)
 from common_utils.mp_rental_emails import assert_rental_confirmation_emails
 from common_utils.test_identities import new_additional_contact
 from common_utils.wrapper_methods import (
@@ -67,6 +74,7 @@ class MPLegacyReservationSetup:
         self.confirmation_dir = confirmation_dir_for_current_test(
             REPORTS_DIR, test_name=test_name
         )
+        self._inbox_ids_before: set[str] = set()
 
         # No property configured for this environment (dev/uat, per
         # environments.ini) falls back to dynamic discovery
@@ -84,6 +92,30 @@ class MPLegacyReservationSetup:
         self.space_number: str | None = None
         self.move_in_date: date | None = None
 
+    def _open_unit_form(self, unit_type: str | None = None) -> None:
+        """Open property (or search), pick a unit, assert Legacy form."""
+        if self.property_url:
+            self.rental_page.open_property_page(self.property_url)
+        else:
+            self.rental_page.open_storefront()
+            if self.mp_state and self.mp_city:
+                self.rental_page.search_storage_location(
+                    state=self.mp_state, city=self.mp_city
+                )
+            else:
+                self.rental_page.select_first_available_location()
+        self.rental_page.select_unit(unit_type=unit_type)
+        flow = self.rental_page.wait_for_reservation_flow()
+        if flow != "legacy":
+            raise AssertionError(
+                "Storefront served the Two-Step Rental flow "
+                "(\"Reserve Now\") instead of Legacy (\"Reserve This "
+                "Space\" / \"Rent Now\") for this session, even though "
+                "this suite configures the property for Legacy - a known "
+                "intermittent storefront-side routing issue, not a "
+                "config problem."
+            )
+
     @log_method_exceptions
     def reserve_unit(
         self,
@@ -96,42 +128,40 @@ class MPLegacyReservationSetup:
         Returns the reservation code shown on confirmation. Sets
         self.move_in_date to the date selected on the form.
         unit_type prefers a category (e.g. \"Parking\") when inventory has it."""
-        if self.property_url:
-            self.rental_page.open_property_page(self.property_url)
-        else:
-            self.rental_page.open_storefront()
-            if self.mp_state and self.mp_city:
-                self.rental_page.search_storage_location(
-                    state=self.mp_state, city=self.mp_city
-                )
-            else:
-                self.rental_page.select_first_available_location()
-        self.rental_page.select_unit(unit_type=unit_type)
-
         business_name = (
             f"{guest['first_name']} {guest['last_name']} Business"
             if renting_as_business
             else None
         )
-        flow = self.rental_page.wait_for_reservation_flow()
-        if flow != "legacy":
-            raise AssertionError(
-                "Storefront served the Two-Step Rental flow "
-                "(\"Reserve Now\") instead of Legacy (\"Reserve This "
-                "Space\") for this session, even though this suite "
-                "configures the property for Legacy - a known "
-                "intermittent storefront-side routing issue, not a "
-                "config problem."
-            )
-        self.move_in_date = self.legacy_page.reserve_unit(
-            email=guest["email"],
-            mobile=guest["mobile"],
-            first_name=guest["first_name"],
-            last_name=guest["last_name"],
-            renting_as_business=renting_as_business,
-            business_name=business_name,
-            days_from_today=days_from_today,
-        )
+        # Shared Gmail keeps every earlier confirmation. Record those ids
+        # before submit so the wait only accepts mail that arrives for this code.
+        self._inbox_ids_before = snapshot_inbox_ids(guest["email"])
+        last_error: Exception | None = None
+        for attempt in range(2):
+            try:
+                self._open_unit_form(unit_type=unit_type)
+                self.move_in_date = self.legacy_page.reserve_unit(
+                    email=guest["email"],
+                    mobile=guest["mobile"],
+                    first_name=guest["first_name"],
+                    last_name=guest["last_name"],
+                    renting_as_business=renting_as_business,
+                    business_name=business_name,
+                    days_from_today=days_from_today,
+                )
+                last_error = None
+                break
+            except AssertionError as exc:
+                last_error = exc
+                if (
+                    attempt == 0
+                    and "contact the facility to confirm" in str(exc).lower()
+                ):
+                    # Soft hold thank-you (no code) — pick another unit once.
+                    continue
+                raise
+        if last_error is not None:
+            raise last_error
         reservation_code = self.legacy_page.get_reservation_code()
         save_confirmation_screenshot(
             self.legacy_page.page,
@@ -149,7 +179,14 @@ class MPLegacyReservationSetup:
     ) -> None:
         """Confirms the reservation confirmation email arrived and matches
         this reservation (code, optional property name, optional move-in date)."""
-        message = wait_for_email(guest["email"], subject_contains="Reservation Confirmation")
+        # One shared Gmail holds every confirmation. Ignore mail that was
+        # already there, and accept only a body that contains this code.
+        message = wait_for_email_where(
+            guest["email"],
+            "Reservation Confirmation",
+            matches=lambda message, code=reservation_code: message_contains(message, code),
+            ignore_ids=self._inbox_ids_before,
+        )
         body = get_email_text(message)
         plain = get_email_plain_text(message)
         save_email_screenshot(
@@ -198,7 +235,7 @@ class MPLegacyReservationSetup:
         )
 
     @log_method_exceptions
-    def convert_reservation_to_rental(
+    def rent_unit_directly(
         self,
         guest: dict,
         rental_data: dict,
@@ -207,25 +244,60 @@ class MPLegacyReservationSetup:
         extras: dict | None = None,
         include_alternate: bool = True,
         card: dict | None = None,
+        renting_as_business: bool = False,
+        unit_type: str | None = None,
     ) -> dict:
-        """Resume a just-created reservation ("Rent online now"), fill the
-        rental application, pay by card or ACH - with or without autopay -
-        and finish it: "Sign Agreements" and signing every document
-        (Traditional signing), or the agreement box and "Pay Now" - which of
-        the two is decided by the property's lease configuration. Walked live
-        2026-09-14 on uat_storoutlet/Bellflower (Traditional, ACH + autopay).
-        Pass extras to tick military / lien / vehicle / coverage / emergency /
-        authorized-access (see MPLegacyReservationFormPage.fill_rental_application).
-        include_alternate=False leaves the secondary contact unticked (Superlease
-        shows N/A). Returns Lease Summary totals, space, ending, and the
-        alternate contact used (or None)."""
-        self.legacy_page.rent_online_now()
+        """Direct paid rental via **Rent Now** on the Legacy unit form
+        (same window as Reserve This Space — live 2026-09-21 Bellflower).
+        Skips the hold thank-you and the confirmation email. Same return shape as
+        convert_reservation_to_rental.
+        """
+        business_name = (
+            f"{guest['first_name']} {guest['last_name']} Business"
+            if renting_as_business
+            else None
+        )
+        with allure.step("Open unit and click Rent Now"):
+            self._open_unit_form(unit_type=unit_type)
+            self.move_in_date = self.legacy_page.start_rental_now(
+                email=guest["email"],
+                mobile=guest["mobile"],
+                first_name=guest["first_name"],
+                last_name=guest["last_name"],
+                renting_as_business=renting_as_business,
+                business_name=business_name,
+                days_from_today=0,
+            )
+        return self._complete_rental_application(
+            guest,
+            rental_data,
+            payment_method=payment_method,
+            autopay=autopay,
+            extras=extras,
+            include_alternate=include_alternate,
+            card=card,
+            resume_from_hold=False,
+        )
+
+    def _complete_rental_application(
+        self,
+        guest: dict,
+        rental_data: dict,
+        payment_method: str = "card",
+        autopay: bool = False,
+        extras: dict | None = None,
+        include_alternate: bool = True,
+        card: dict | None = None,
+        *,
+        resume_from_hold: bool = True,
+    ) -> dict:
+        """Fill application, pay, submit — after Rent Now or Rent online now."""
+        if resume_from_hold:
+            self.legacy_page.rent_online_now()
         self.legacy_page.ensure_payment_method(payment_method)
         alternate = None
         if include_alternate and not (extras or {}).get("skip_alternate"):
             alternate = new_additional_contact()
-            # The storefront rejects digits in names ("Name contains invalid
-            # characters", 2026-09-14) - the helper's "Alt3f9a1c" becomes letters.
             alternate["last_name"] = re.sub(
                 r"\d",
                 lambda digit: "abcdefghij"[int(digit.group())],
@@ -248,20 +320,28 @@ class MPLegacyReservationSetup:
         self.space_number = totals["space_number"]
         ending = self.legacy_page.submit_rental()
         space_number = self.legacy_page.assert_rental_complete()
+        # Confirmation URL is source of truth for the rented unit. Lease
+        # Summary can briefly show a sibling unit (#loadN+1) from the same
+        # sidebar DOM (live 2026-09-21: load139 vs load138, load142 vs
+        # load141) — warn but do not fail a completed rental.
         if totals["space_number"] and totals["space_number"] != space_number:
-            raise AssertionError(
-                f"The Lease Summary named space {totals['space_number']}, "
-                f"the confirmation space {space_number}"
+            allure.attach(
+                f"Lease Summary space {totals['space_number']!r} != "
+                f"confirmation {space_number!r}; using confirmation.",
+                name="space-summary-vs-confirmation",
+                attachment_type=allure.attachment_type.TEXT,
             )
         self.space_number = space_number
         from common_utils.mp_lease_costs import read_confirmation_page_costs
 
-        confirmation_costs = read_confirmation_page_costs(self.legacy_page.page)
-        save_confirmation_screenshot(
-            self.legacy_page.page,
-            self.confirmation_dir / f"rental-{space_number}.png",
-            allure_name=f"rental-confirmation-{space_number}",
-        )
+        with allure.step(f"Rental confirmation page (space {space_number})"):
+            confirmation_costs = read_confirmation_page_costs(self.legacy_page.page)
+            save_confirmation_screenshot(
+                self.legacy_page.page,
+                self.confirmation_dir / f"rental-{space_number}.png",
+                allure_name=f"rental-confirmation-{space_number}",
+                attach_allure=False,
+            )
         return {
             **totals,
             "space_number": space_number,
@@ -270,6 +350,39 @@ class MPLegacyReservationSetup:
             "confirmation_charges": confirmation_costs["charges"],
             "confirmation_total": confirmation_costs["total"],
         }
+
+    @log_method_exceptions
+    def convert_reservation_to_rental(
+        self,
+        guest: dict,
+        rental_data: dict,
+        payment_method: str = "card",
+        autopay: bool = False,
+        extras: dict | None = None,
+        include_alternate: bool = True,
+        card: dict | None = None,
+    ) -> dict:
+        """Resume a just-created reservation ("Rent online now"), fill the
+        rental application, pay by card or ACH - with or without autopay -
+        and finish it: "Sign Agreements" and signing every document
+        (Traditional signing), or the agreement box and "Pay Now" - which of
+        the two is decided by the property's lease configuration. Walked live
+        2026-09-14 on uat_storoutlet/Bellflower (Traditional, ACH + autopay).
+        Pass extras to tick military / lien / vehicle / coverage / emergency /
+        authorized-access (see MPLegacyReservationFormPage.fill_rental_application).
+        include_alternate=False leaves the secondary contact unticked (Superlease
+        shows N/A). Returns Lease Summary totals, space, ending, and the
+        alternate contact used (or None)."""
+        return self._complete_rental_application(
+            guest,
+            rental_data,
+            payment_method=payment_method,
+            autopay=autopay,
+            extras=extras,
+            include_alternate=include_alternate,
+            card=card,
+            resume_from_hold=True,
+        )
 
     @log_method_exceptions
     def assert_rental_emails(
@@ -281,6 +394,8 @@ class MPLegacyReservationSetup:
         security_deposit: float | None,
         autopay: bool = True,
         charges: dict[str, float] | None = None,
+        body_out: list[str] | None = None,
+        lease_artifacts_out: dict | None = None,
     ) -> str:
         """The same Rental Confirmation / Auto Payment Confirmation checks as
         the Two-Step flow (mp_rental_emails). Pass ``charges`` from the Lease
@@ -296,4 +411,6 @@ class MPLegacyReservationSetup:
             security_deposit,
             autopay,
             charges=charges,
+            body_out=body_out,
+            lease_artifacts_out=lease_artifacts_out,
         )

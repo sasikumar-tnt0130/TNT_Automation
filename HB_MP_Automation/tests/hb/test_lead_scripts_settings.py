@@ -2,6 +2,7 @@ import uuid
 
 import allure
 
+from common_utils.email_providers import test_inbox_address
 from pages.common.hb_lead_scripts_page import HBLeadScriptsPage
 from pages.common.hb_settings_navigation import HBSettingsNavigation
 from pages.hummingbird.hb_quick_launch_page import HBQuickLaunchPage
@@ -73,7 +74,7 @@ def test_no_script_section_without_a_property_script(hb_login_page, app_config, 
 
     quick_launch = HBQuickLaunchPage(page, timeout)
     quick_launch.open_quick_launch_for_property(data["other_property"])
-    quick_launch.start_new_contact(f"qa-script-{uuid.uuid4().hex[:10]}@mailinator.com")
+    quick_launch.start_new_contact(test_inbox_address(f"qa-script-{uuid.uuid4().hex[:10]}"))
     scripts = HBLeadScriptsPage(page, timeout, HBSettingsNavigation(page, timeout))
     scripts.assert_no_onboarding_script()
     scripts.close_onboarding()

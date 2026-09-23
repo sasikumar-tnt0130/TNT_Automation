@@ -4,7 +4,6 @@ import os
 import re
 import shutil
 import subprocess
-import uuid
 from collections.abc import Callable, Generator
 from configparser import ConfigParser
 from datetime import datetime
@@ -32,7 +31,7 @@ from common_utils.browser_sessions import (
     video_recording_options,
 )
 from common_utils.test_data_reader import load_test_data
-from common_utils.test_identities import new_hb_lead_guest
+from common_utils.test_identities import new_hb_lead_guest, new_mp_guest
 from common_utils.wrapper_methods import CURRENT_TEST_ENV
 from config.config_reader import EnvironmentConfig, PropertyConfig, load_config, load_environment, property_for_role
 from pages.common.hb_login_page import HBLoginPage
@@ -193,36 +192,22 @@ def pytest_report_header(config: pytest.Config) -> str | None:
     return config.stash.get(_CLEANUP_SUMMARY, "") or None
 
 
-def _allure_report_name(config: pytest.Config) -> str:
-    """Names the report after whatever was actually run - a single
-    test file/case's own name (e.g. "test_login" or
-    "test_login-test_can_login"), or "all-tests" for a full-suite run
-    with no specific file/node-id on the command line - so a single
-    test case's report doesn't get overwritten by, or confused with,
-    a full-suite run's."""
-    targets = [arg for arg in config.args if not arg.startswith("-")]
-    if not targets:
-        return "all-tests"
-    names = []
-    for target in targets:
-        path_part, _, node_part = target.partition("::")
-        name = Path(path_part).stem
-        if node_part:
-            name = f"{name}-{re.sub(r'[^A-Za-z0-9_.-]+', '_', node_part)}"
-        names.append(name)
-    return "_".join(names) if len(names) <= 3 else f"{len(names)}-targets"
-
-
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    """Regenerate Allure HTML after every run (best-effort if CLI missing).
+    """One Allure HTML report for the whole pytest process (best-effort).
 
-    Uses a multi-file report by default — open with `allure open`, not by
-    double-clicking index.html in File Explorer (attachments will not load).
-    Set [browser] allure_open = true to launch the viewer after generate.
-    allure_single_file = true only if you truly need one self-contained HTML
-    (embeds every video/trace and can reach hundreds of MB).
+    Always writes to ``reports/allure-report`` (overwrites prior generate),
+    whether the invocation was one test, one file, or ``-m …``. Skips
+    ``--collect-only`` so collection does not spawn a report.
+
+    Multi-file report — open with ``allure open``, not by double-clicking
+    index.html (attachments will not load). Set [browser] allure_open =
+    true to launch the viewer after generate. allure_single_file = true
+    only if you need one self-contained HTML (embeds every video/trace).
     """
-    report_dir = ALLURE_REPORT_DIR / _allure_report_name(session.config)
+    if getattr(session.config.option, "collectonly", False):
+        return
+
+    report_dir = ALLURE_REPORT_DIR
     app_config = load_config()
     single_file = app_config.getboolean("browser", "allure_single_file", fallback=False)
     open_report = app_config.getboolean("browser", "allure_open", fallback=True)
@@ -622,10 +607,9 @@ def mp_rental_page(
 
 @pytest.fixture
 def mp_guest() -> dict:
-    """A fresh guest identity per test, email on a public Mailinator
-    inbox so it stays disposable and doesn't collide across parallel
-    runs or environments."""
-    return _new_mp_guest()
+    """A fresh guest identity per test. The email is the Gmail account
+    in secrets.ini [gmail]."""
+    return new_mp_guest()
 
 
 @pytest.fixture
@@ -633,21 +617,7 @@ def mp_second_guest() -> dict:
     """A second, independent guest for tests needing two storefront
     tenants (e.g. linking one tenant's space into another's online
     account)."""
-    return _new_mp_guest()
-
-
-def _new_mp_guest() -> dict:
-    suffix = uuid.uuid4().hex[:10]
-    return {
-        "first_name": "Auto",
-        "last_name": "Tester",
-        "email": f"mp-auto-{suffix}@mailinator.com",
-        # 555-0100..0199 is the reserved fictional range - reservations
-        # can trigger SMS, so never a possibly-real number. The storefront
-        # accepts it (its phone check is an async lookup - see
-        # MPLegacyReservationFormPage's phone wait).
-        "mobile": f"(714) 555-01{int(suffix[:2], 16) % 100:02d}",
-    }
+    return new_mp_guest()
 
 
 @pytest.fixture

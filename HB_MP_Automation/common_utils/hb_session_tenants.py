@@ -137,7 +137,7 @@ def seed_history(
 ) -> None:
     """What the read-only communication tests read: an email and a text on
     each of the tenant's spaces, a long text and a phone log. Emails go only
-    to Mailinator and texts only to the fictional number
+    to the Gmail test inbox and texts only to the fictional number
     (HBCommunicationComposePage refuses anything else)."""
     run = uuid.uuid4().hex[:8]
     with allure.step(f"Seed {tenant['name']}'s communications"):

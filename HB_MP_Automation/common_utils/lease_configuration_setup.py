@@ -2,7 +2,6 @@ from configparser import ConfigParser
 
 import allure
 
-from common_utils.waits import waits
 from common_utils.wrapper_methods import log_method_exceptions
 from config.config_reader import EnvironmentConfig
 from pages.common.hb_login_page import HBLoginPage
@@ -19,8 +18,10 @@ class LeaseConfigurationSetup:
     identity comes from config/properties.ini (one property per
     environment) rather than a separate test-data JSON.
 
-    Configure methods do not Clear Cache. Mariposa preconditions must
-    call ``flush_website_cache`` once after all configure steps.
+    Configure methods do not Clear Cache and leave Settings open so later
+    steps reuse the same panel (one open). Mariposa preconditions must
+    call ``flush_website_cache`` once after all configure steps — that
+    Clear Cache also closes Settings (one close).
     """
 
     @log_method_exceptions
@@ -123,22 +124,22 @@ class LeaseConfigurationSetup:
 
         Always runs Clear Cache — admin can already read the desired
         switch state while the storefront still serves a prior session's
-        cache (2026-09-18).
+        cache (2026-09-18). ``clear_cache`` also closes Settings (one
+        open / one close for the whole configure session).
         """
         with allure.step(
             "Flush website cache (Mariposa precondition final step)"
         ):
+            # clear_cache waits for loading + toast, then closes Settings.
             self.two_step_rental_page.nav.clear_cache()
-            self.hb_login_page.page.wait_for_timeout(waits().long)
 
     @log_method_exceptions
     def disable_clickwrap_and_super_lease(
         self, rental_page: MPUnitSearchPage | None = None
-    ) -> None:
+    ) -> bool:
         # Same confirm-modal flow as disable_two_step_… (live 2026-09-18).
         # Two-Step off first, then Super Lease (unlocks Clickwrap), then
-        # Clickwrap. Skip when already off. Caller flushes via
-        # flush_website_cache after configure steps.
+        # Clickwrap. Skip when already off. Returns True if any Save ran.
         self.open_state_compliance_tools()
         # Include Two-Step in the bypass check: when legacy_property and
         # two_step_property are the same key, a prior Two-Step module can
@@ -158,15 +159,16 @@ class LeaseConfigurationSetup:
         self.lease_configuration.assert_clickwrap_signature_disabled()
         self.lease_configuration.assert_super_lease_disabled()
         self.two_step_rental_page.assert_two_step_disabled(self.fms_property_name)
+        return not already_configured
 
     @log_method_exceptions
     def disable_two_step_clickwrap_and_super_lease(
         self, rental_page: MPUnitSearchPage | None = None
-    ) -> None:
+    ) -> bool:
         # Live 2026-09-18 (stage): Super Lease / Clickwrap confirm modals
         # need Vue buttonClicked (see HBLeaseConfigurationPage). Order:
         # Two-Step off first, then Super Lease, then Clickwrap.
-        # Caller flushes via flush_website_cache after configure steps.
+        # Returns True if any Save ran.
         with allure.step(
             f"Ensure Two-Step, Clickwrap, and Super Lease are off "
             f"({self.fms_property_name})"
@@ -197,18 +199,19 @@ class LeaseConfigurationSetup:
             self.two_step_rental_page.assert_two_step_disabled(
                 self.fms_property_name
             )
+            return not already_configured
 
     @log_method_exceptions
     def enable_clickwrap_with_super_lease_disabled(
         self, rental_page: MPUnitSearchPage | None = None
-    ) -> None:
+    ) -> bool:
         # Per explicit instruction: bypass the whole sequence (including
         # the force-disable-Two-Step precondition step) when Clickwrap/
         # Super Lease already match the requested state.
         # open_state_compliance_tools() must run before the check
         # itself - see disable_clickwrap_and_super_lease's comment for
         # why (is_*_enabled() needs property_name already seeded).
-        # Caller flushes via flush_website_cache after configure steps.
+        # Returns True if any Save ran.
         self.open_state_compliance_tools()
         # Two-Step must be off for Legacy; same-property role configs can
         # leave it on after a Two-Step module (see disable_clickwrap…).
@@ -227,15 +230,16 @@ class LeaseConfigurationSetup:
         self.lease_configuration.assert_clickwrap_signature_enabled()
         self.lease_configuration.assert_super_lease_disabled()
         self.two_step_rental_page.assert_two_step_disabled(self.fms_property_name)
+        return not already_configured
 
     @log_method_exceptions
     def enable_super_lease_and_clickwrap(
         self, rental_page: MPUnitSearchPage | None = None
-    ) -> None:
+    ) -> bool:
         # See enable_clickwrap_with_super_lease_disabled for why this
         # checks first and bypasses when already matching, and why
         # open_state_compliance_tools() must run before the check.
-        # Caller flushes via flush_website_cache after configure steps.
+        # Returns True if any Save ran (including forced Two-Step off).
         self.open_state_compliance_tools()
         # Critical for same-property legacy+two_step configs: after a
         # Two-Step module, SL+CW are already on so a SL/CW-only bypass
@@ -253,6 +257,7 @@ class LeaseConfigurationSetup:
                 self.fms_property_name
             )
         )
+        changed = False
         if not already_configured:
             # Two-Step off first (same order as other Legacy configure
             # methods). Enabling Super Lease before disabling Two-Step
@@ -261,6 +266,7 @@ class LeaseConfigurationSetup:
             self.two_step_rental_page.set_two_step(self.fms_property_name, False)
             self.lease_configuration.set_super_lease(True)
             self.lease_configuration.set_clickwrap_signature(True)
+            changed = True
         else:
             # Still force Two-Step off: admin switch reads have been wrong
             # while the storefront kept Two-Step (see verify_two_step_on_storefront).
@@ -269,6 +275,7 @@ class LeaseConfigurationSetup:
         self.lease_configuration.assert_super_lease_enabled()
         self.lease_configuration.assert_clickwrap_signature_enabled()
         self.two_step_rental_page.assert_two_step_disabled(self.fms_property_name)
+        return changed
 
     @log_method_exceptions
     def enable_super_lease_with_clickwrap_disabled(
@@ -356,69 +363,60 @@ class LeaseConfigurationSetup:
                 self.set_value_tier_layout(tier_layout)
 
     @log_method_exceptions
-    def set_advance_reservation_days(self, days: int) -> None:
+    def set_advance_reservation_days(self, days: int) -> bool:
         """How many days out a reservation can be made for this
-        property. Does not Clear Cache; call ``flush_website_cache``
-        after configure steps."""
-        self.two_step_rental_page.set_advance_reservation_days(
+        property. Returns True if Saved. Does not Clear Cache; call
+        ``flush_website_cache`` after configure steps."""
+        return self.two_step_rental_page.set_advance_reservation_days(
             self.fms_property_name, days
         )
 
     @log_method_exceptions
     def enable_two_step_clickwrap_and_super_lease(
         self, rental_page: MPUnitSearchPage | None = None
-    ) -> None:
-        # Per explicit instruction: check the current configuration
-        # first and bypass the force-disable-then-reenable Two-Step
-        # dance (plus Super Lease/Clickwrap) when everything already
-        # matches the requested state. open_state_compliance_tools()
-        # must run before the check itself - see
-        # disable_clickwrap_and_super_lease's comment for why.
-        # Caller flushes via flush_website_cache after configure steps
-        # (storefront). Mid-flow Clear Cache below is only for FMS
-        # eligibility before toggling Two-Step.
+    ) -> bool:
+        # Order (live 2026-09-17 / 2026-09-19):
+        # 1) Ensure Super Lease + Clickwrap under Lease Configuration
+        # 2) Website Clear Cache so FMS remounts with eligibility
+        # 3) Then read / enable Two-Step under FMS Initial Setup
+        # Do not open FMS / check Two-Step before that Clear Cache when
+        # SL/CW just changed — FMS keeps a stale superleaseEnabled flag.
+        # Returns True if any Save ran.
         with allure.step(
             f"Ensure Two-Step, Clickwrap, and Super Lease are on "
             f"({self.fms_property_name})"
         ):
             self.open_state_compliance_tools()
-            already_configured = (
-                self.lease_configuration.is_super_lease_enabled()
-                and self.lease_configuration.is_clickwrap_signature_enabled()
-                and self.two_step_rental_page.is_two_step_enabled(
-                    self.fms_property_name
-                )
+            sl_on = self.lease_configuration.is_super_lease_enabled()
+            cw_on = self.lease_configuration.is_clickwrap_signature_enabled()
+            lease_changed = False
+            if not sl_on:
+                self.lease_configuration.set_super_lease(True)
+                lease_changed = True
+            if not cw_on:
+                self.lease_configuration.set_clickwrap_signature(True)
+                lease_changed = True
+
+            two_step_on = self.two_step_rental_page.is_two_step_enabled(
+                self.fms_property_name
             )
-            if already_configured:
+            two_step_changed = False
+            if two_step_on and not lease_changed:
                 with allure.step("Skip Saves (already on)"):
                     pass
+            elif two_step_on:
+                with allure.step("Skip Two-Step toggle (already on)"):
+                    pass
             else:
-                with allure.step(
-                    "Enable Super Lease, Clickwrap, then Two-Step"
-                ):
-                    self.lease_configuration.set_super_lease(True)
-                    self.lease_configuration.set_clickwrap_signature(True)
-                    # Live 2026-09-17 (uat_storoutlet / Chula Vista): FMS
-                    # still shows the Superlease/Clickwrap requirements copy
-                    # and will not stay ON until Website Clear Cache runs and
-                    # ~5s elapses. Required for FMS eligibility before
-                    # toggling Two-Step — not a substitute for the caller's
-                    # final flush_website_cache for the storefront.
-                    with allure.step(
-                        "Flush website cache so FMS sees Superlease/Clickwrap"
-                    ):
-                        self.two_step_rental_page.nav.clear_cache()
-                        # Backend eligibility lag after Clear Cache - live
-                        # 2026-09-17: ~5s often enough, but Superlease stale
-                        # warning still hit after waits().long; give FMS more
-                        # time before the first Two-Step toggle attempt.
-                        self.hb_login_page.page.wait_for_timeout(20000)
+                with allure.step("Enable Two-Step Rental"):
                     self.two_step_rental_page.set_two_step(
                         self.fms_property_name, True
                     )
+                    two_step_changed = True
 
             self.two_step_rental_page.assert_two_step_enabled(
                 self.fms_property_name
             )
             self.lease_configuration.assert_super_lease_enabled()
             self.lease_configuration.assert_clickwrap_signature_enabled()
+            return lease_changed or two_step_changed

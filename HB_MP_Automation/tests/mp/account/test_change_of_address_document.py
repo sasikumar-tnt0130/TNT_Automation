@@ -81,7 +81,7 @@ def test_change_of_address_generates_document(
                 fms_property_name=prop.fms_property_name,
             )
             setup.disable_clickwrap_and_super_lease()
-            setup.flush_website_cache()
+            # setup.flush_website_cache()
 
         page = store_ctx.new_page()
         prepare_desktop_page(page, app_config)

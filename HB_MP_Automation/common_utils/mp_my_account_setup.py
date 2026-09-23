@@ -3,11 +3,13 @@ from configparser import ConfigParser
 
 from playwright.sync_api import Page
 
-from common_utils.mailinator_utils import (
+from common_utils.email_utils import (
     get_email_plain_text,
     latest_email_time,
+    message_contains,
     wait_for_email,
     wait_for_email_after,
+    wait_for_email_where,
 )
 from common_utils.wrapper_methods import log_method_exceptions
 from config.config_reader import EnvironmentConfig
@@ -20,7 +22,7 @@ class MPMyAccountSetup:
     suite's 8860/8861/8862/10605, ported against what's live (2026-09-13,
     uat_storoutlet/Chula Vista): the Robot suite logged in to one fixed,
     pre-made account; here each run's tenant creates its own online account
-    with the code emailed to its Mailinator inbox. Card data comes from
+    with the code emailed to the Gmail test inbox. Card data comes from
     secrets.ini's [payment] section, as for the rental; billing_address
     is the address the tenant gave at rental (config/test_data/mp_rental.json
     - address1/address2/zip/state_code/city)."""
@@ -74,7 +76,12 @@ class MPMyAccountSetup:
         you for your Payment", a Payment Summary with "Unit Space <space>",
         each charge and "Total Payment Amount $ 170.00"."""
         body = get_email_plain_text(
-            wait_for_email(guest["email"], subject_contains="Online Payment Confirmation")
+            wait_for_email_where(
+                guest["email"],
+                "Online Payment Confirmation",
+                matches=lambda message, space=space_number: message_contains(message, space),
+                newest=True,
+            )
         )
         expected = {
             "Thank you for your Payment": r"Thank you for your Payment",

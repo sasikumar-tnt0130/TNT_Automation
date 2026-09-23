@@ -8,7 +8,7 @@ every test here. That profile has no ACH gateway.
 import pytest
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def gateway_profile() -> str:
     """Authorize.Net / non-Tenant-Payments (environments.ini profile=non_tenant_payments)."""
     return "non_tenant_payments"

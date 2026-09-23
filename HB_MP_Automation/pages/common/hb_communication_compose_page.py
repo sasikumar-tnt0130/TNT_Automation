@@ -4,6 +4,7 @@ from pathlib import Path
 import allure
 from playwright.sync_api import Locator, expect
 
+from common_utils.email_providers import is_test_inbox_email
 from common_utils.wrapper_methods import log_method_exceptions
 from pages.common.hb_communication_filters_page import HBCommunicationFiltersPage
 from common_utils.waits import waits
@@ -12,7 +13,8 @@ from common_utils.waits import waits
 # (conftest's mp_guest / hb_lead_guest) - never to an older (707) 719-xxxx
 # number, which could be a real person's.
 FICTIONAL_PHONE = re.compile(r"\(\s*(?:707|714)\s*\)\s*555-01\d\d")
-MAILINATOR = re.compile(r"@mailinator\.com\b", re.IGNORECASE)
+# True for the Gmail address in secrets.ini [gmail].
+TEST_INBOX = is_test_inbox_email
 SENT_TODAY = re.compile(r"Today,\s*\d{1,2}:\d{2}\s*[ap]m", re.IGNORECASE)
 CARD_KINDS = {
     "email": re.compile(r"Email\s*\(Out\)"),
@@ -43,7 +45,7 @@ class HBCommunicationComposePage(HBCommunicationFiltersPage):
       innermost container holding it), not by the nearest close button.
     - The new cards: "Email (Out) Today, 8:37am Space 0003 - <subject>",
       "Text (Out) Today, 8:37am Space 0003 <message>", "Call (In) Today,
-      8:37am <note>". The email reached the tenant's Mailinator inbox from
+      8:37am <note>". The email reached the tenant's Gmail inbox from
       "Storage Outlet - Bellflower".
     - With every recipient removed (their mdi-close-circle), Send is refused:
       "Error: All fields are required." (email), "Please review fields"
@@ -171,15 +173,15 @@ class HBCommunicationComposePage(HBCommunicationFiltersPage):
         """Sends an email to the contact's default recipient (plus `also_to`,
         one of its other contacts, and the file `attachment`) - for `space`
         when given, see _send_for_space - and returns the recipients. Refuses
-        to send unless every recipient is a Mailinator test inbox."""
+        to send unless every recipient is the Gmail test inbox."""
         with allure.step(f"Send email: {subject}"):
             window = self._open_compose("Send Email")
             if also_to:
                 self._tick_recipient(window, also_to)
             recipients = self.recipients(window)
-            if not recipients or not all(MAILINATOR.search(recipient) for recipient in recipients):
+            if not recipients or not all(TEST_INBOX(recipient) for recipient in recipients):
                 self._close_window(window)
-                raise AssertionError(f"Not emailing {recipients} - only Mailinator test inboxes")
+                raise AssertionError(f"Not emailing {recipients} - only the Gmail test inbox")
             window.locator(SUBJECT).fill(subject)
             self._type_in_editor(window, body)
             if attachment:

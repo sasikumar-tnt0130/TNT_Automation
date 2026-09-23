@@ -2,6 +2,7 @@ import uuid
 
 import allure
 
+from common_utils.email_providers import test_inbox_address
 from pages.common.hb_lead_scripts_page import HBLeadScriptsPage
 from pages.common.hb_settings_navigation import HBSettingsNavigation
 from pages.common.hb_spaces_page import HBSpacesPage
@@ -9,7 +10,7 @@ from pages.hummingbird.hb_quick_launch_page import HBQuickLaunchPage
 
 
 def _new_contact_email() -> str:
-    return f"qa-script-{uuid.uuid4().hex[:10]}@mailinator.com"
+    return test_inbox_address(f"qa-script-{uuid.uuid4().hex[:10]}")
 
 
 @allure.title("A property script shows in Tenant Onboarding, shows its changes, and goes when cleared")

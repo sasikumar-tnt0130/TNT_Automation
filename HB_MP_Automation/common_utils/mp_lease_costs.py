@@ -31,14 +31,22 @@ def validate_cost_line_items_enabled() -> bool:
     )
 
 _MONEY = re.compile(r"(-\s*)?\$\s*([\d,]+(?:\.\d+)?)")
+# Superlease / email: "Total Cost to Move-in: $209.20"
+# Two-Step confirmation page: "Total Paid to Move-in: $118.00" (stage 2026-09-19)
+# Clickwrap Lease Agreement: "TOTAL MOVE-In Cost-$209.20" (hyphen, no space)
 _MOVE_IN_TOTAL = re.compile(
-    r"Total\s+(?:Cost\s+To\s+)?Move-?In(?:\s+Cost)?\s*:?\s*\$\s*([\d,]+(?:\.\d+)?)",
+    r"Total\s+(?:(?:Cost|Paid)\s+To\s+)?Move-?In(?:\s+Cost)?\s*[-:]?\s*\$\s*([\d,]+(?:\.\d+)?)",
     re.I,
 )
 # Lease SPACE INFORMATION uses "Total Move-In Cost" (no "Cost To").
 _MOVE_IN_TOTAL_ALT = re.compile(
-    r"Total\s+Move-?In\s+Cost\s*:?\s*\$\s*([\d,]+(?:\.\d+)?)",
+    r"Total\s+Move-?In\s+Cost\s*[-:]?\s*\$\s*([\d,]+(?:\.\d+)?)",
     re.I,
+)
+# Two-Step Pay Now Rental Confirmation still says this (Account Summary omits
+# coverage/protection from its Total Cost To Move-In — stage/Rutland).
+TWO_STEP_PAY_NOW_EMAIL_MARKER = (
+    "remaining information required to access your space"
 )
 
 # Lease-only rollups that are not charged the same way on MP / email.
@@ -98,23 +106,180 @@ def _amounts_equal(left: float | None, right: float | None) -> bool:
     return abs(left - right) < 0.005
 
 
+def attach_move_in_cost_summary(
+    *,
+    space_number: str,
+    sources: list[tuple[str, float | None, str]],
+    reference_label: str = "MP confirmation",
+) -> None:
+    """One HTML summary card: move-in total per source vs the reference total.
+
+    ``sources`` is ``(label, amount_or_None, note)``. The first row with a
+    non-None amount whose label matches ``reference_label`` (or the first
+    non-None amount) is the reference for MATCH / MISMATCH / MISSING.
+    """
+    space = re.sub(r"^#", "", str(space_number or "").strip())
+    reference: float | None = None
+    for label, amount, _note in sources:
+        if amount is None:
+            continue
+        if label == reference_label or reference is None:
+            reference = amount
+            if label == reference_label:
+                break
+
+    rows_html: list[str] = []
+    text_lines = [
+        f"Move-in total summary#{(' ' + space) if space else ''}",
+        f"Reference: {reference_label}"
+        + (f" = {format_money(reference)}" if reference is not None else " (none)"),
+        "-" * 64,
+    ]
+    for label, amount, note in sources:
+        if amount is None:
+            status = "MISSING"
+        elif reference is None:
+            status = "—"
+        elif _amounts_equal(amount, reference):
+            status = "MATCH"
+        else:
+            status = "MISMATCH"
+        amount_cell = format_money(amount) if amount is not None else "—"
+        note_cell = note or ""
+        color = {
+            "MATCH": "#1b7f3a",
+            "MISMATCH": "#b00020",
+            "MISSING": "#9a6700",
+        }.get(status, "#333")
+        rows_html.append(
+            "<tr>"
+            f"<td>{html_lib.escape(label)}</td>"
+            f"<td><b>{html_lib.escape(amount_cell)}</b></td>"
+            f"<td style='color:{color}'><b>{status}</b></td>"
+            f"<td style='color:#666;font-size:12px'>{html_lib.escape(note_cell)}</td>"
+            "</tr>"
+        )
+        text_lines.append(
+            f"{label}: {amount_cell} → {status}"
+            + (f" ({note_cell})" if note_cell else "")
+        )
+
+    title = "Move-in total summary"
+    if space:
+        title += f" #{space}"
+    report_html = (
+        f"<h3>{html_lib.escape(title)}</h3>"
+        "<p style='color:#666;font-size:12px'>Quick verdict across sources. "
+        "Detail matrices are in the substeps below. Email Superlease PDFs "
+        "are attached together under <b>Superlease PDFs</b> in this step.</p>"
+        "<table border='1' cellpadding='6' cellspacing='0' "
+        "style='border-collapse:collapse;font-family:sans-serif'>"
+        "<tr style='background:#eee'>"
+        "<th>Source</th><th>Total Cost to Move-in</th><th>vs MP</th><th>Note</th>"
+        "</tr>"
+        + "".join(rows_html)
+        + "</table>"
+    )
+    with allure.step(title):
+        allure.attach(
+            report_html,
+            name="move-in-total-summary",
+            attachment_type=allure.attachment_type.HTML,
+        )
+        allure.attach(
+            "\n".join(text_lines),
+            name="move-in-total-summary.txt",
+            attachment_type=allure.attachment_type.TEXT,
+        )
+
+
 def parse_move_in_total(text: str) -> float | None:
     match = _MOVE_IN_TOTAL.search(text or "") or _MOVE_IN_TOTAL_ALT.search(text or "")
     if not match:
         match = re.search(
-            r"Total\s+Cost\s+to\s+Move-?in\s*:?\s*\$\s*([\d,]+(?:\.\d+)?)",
+            r"Total\s+(?:Cost|Paid)\s+to\s+Move-?in\s*[-:]?\s*\$\s*([\d,]+(?:\.\d+)?)",
             text or "",
             re.I,
         )
     return float(match.group(1).replace(",", "")) if match else None
 
 
+def coverage_or_protection_total(charges: dict[str, float] | None) -> float:
+    """Sum of coverage / protection-plan *premiums* (often omitted from
+    Two-Step Pay Now email Account Summary).
+
+    Skips plan *limits* (e.g. Coverage $2000) when those appear as the
+    charge amount on Lease Summary / MP confirmation.
+    """
+    if not charges:
+        return 0.0
+    total = 0.0
+    for label, amount in charges.items():
+        if not re.search(r"coverage|protection", label, re.I):
+            continue
+        if amount >= 500:
+            continue
+        total += amount
+    return round(total, 2)
+
+
+def expected_rental_email_move_in_total(
+    amount_paid: float,
+    email_body: str,
+    charges: dict[str, float] | None = None,
+) -> float:
+    """Total Cost To Move-In the Rental Confirmation email should show.
+
+    Two-Step Pay Now email (Get Access prompt) sometimes omits
+    coverage/protection (stage/Rutland 2026-09-19: Pay Now $118, email $100).
+    On other properties the same email already shows the full amount paid
+    (uat Bellflower 2026-09-19: email $209.20 = amount paid). Prefer the
+    printed total when it matches amount_paid; only subtract coverage when
+    the email total matches that reduced figure.
+
+    Stage/Rutland RAB (2026-09-22): Pay Now collects ``amount_paid`` ($80)
+    while the email's Total Cost To Move-In is the full move-in ($160) —
+    same split as Superlease "Payment Collected at Move-In" vs "Total
+    Move-In Cost". Accept the email's printed total in that case.
+    """
+    if TWO_STEP_PAY_NOW_EMAIL_MARKER.lower() not in (email_body or "").lower():
+        return amount_paid
+    found = parse_move_in_total(email_body)
+    if found is not None and _amounts_equal(found, amount_paid):
+        return amount_paid
+    omitted = coverage_or_protection_total(charges)
+    if omitted:
+        expected = round(amount_paid - omitted, 2)
+        if found is None or _amounts_equal(found, expected):
+            allure.attach(
+                f"Two-Step Pay Now Rental Confirmation omits coverage/protection "
+                f"({format_money(omitted)}) from Account Summary.\n"
+                f"amount_paid={format_money(amount_paid)} → email Total Cost expected "
+                f"{format_money(expected)}"
+                + (f" (email has {format_money(found)})" if found is not None else ""),
+                name="two-step-email-total-without-coverage",
+                attachment_type=allure.attachment_type.TEXT,
+            )
+            return expected
+    if found is not None and found > amount_paid and not _amounts_equal(found, amount_paid):
+        allure.attach(
+            f"Two-Step Pay Now Rental Confirmation Total Cost To Move-In "
+            f"{format_money(found)} is the full move-in cost; Pay Now collected "
+            f"{format_money(amount_paid)} (live stage/Rutland RAB 2026-09-22).\n"
+            f"Asserting the email's printed Total Cost.",
+            name="two-step-email-total-full-move-in",
+            attachment_type=allure.attachment_type.TEXT,
+        )
+        return found
+    return amount_paid
+
+
 def lease_text_for_space(lease_text: str, space_number: str | None) -> str:
     """Slice lease PDF text to the rented space (multi-space Superleases).
 
-    Starts at SPACE INFORMATION / PAYMENT near ``#<space>`` (or
-    ``Space <space>``) and stops before the next other unit id.
-    Falls back to the full text when the space is not found.
+    Starts at SPACE INFORMATION / PAYMENT / UNIT # near ``#<space>`` (or
+    ``Space <space>`` / ``UNIT #: <space>``) and stops before the next other
+    unit id. Falls back to the full text when the space is not found.
     """
     text = lease_text or ""
     if not text or not space_number:
@@ -123,7 +288,7 @@ def lease_text_for_space(lease_text: str, space_number: str | None) -> str:
     if not space:
         return text
     hit = re.search(
-        rf"(?:Space\s*[#:]?\s*|#\s*){re.escape(space)}\b",
+        rf"(?:UNIT\s*#\s*:?\s*|Space\s*[#:]?\s*|#\s*){re.escape(space)}\b",
         text,
         re.I,
     )
@@ -138,11 +303,11 @@ def lease_text_for_space(lease_text: str, space_number: str | None) -> str:
         start = max(0, start - 600) + headers[-1].start()
     rest = text[start:]
     # End before another unit id (#ABCD) that is not this space, or the
-    # next SPACE INFORMATION block (another unit's card).
+    # next SPACE INFORMATION / UNIT # block (another unit's card).
     tail = rest[max(80, hit.end() - start) :]
     end = len(rest)
     other = re.search(
-        rf"#\s*(?!{re.escape(space)}\b)[A-Za-z0-9]+\b",
+        rf"(?:UNIT\s*#\s*:?\s*|#\s*)(?!{re.escape(space)}\b)[A-Za-z0-9]+\b",
         tail,
         re.I,
     )
@@ -160,7 +325,7 @@ def parse_charges_from_summary_text(text: str) -> dict[str, float]:
     Takes the last $amount on each line so labels like ``Coverage $2000`` keep
     the coverage limit and use ``$8.00`` as the charge (screenshot 2026-09-18).
 
-    Mailinator plain text used to collapse to one line; when there are almost
+    Inbox plain text used to collapse to one line; when there are almost
     no newlines, amounts are split on every ``$`` boundary instead.
     """
     # Earliest charge-like label so MP "Security Deposit" rows above
@@ -183,7 +348,7 @@ def parse_charges_from_summary_text(text: str) -> dict[str, float]:
     # Only split on the real move-in total footer — bare "Total:" also matches
     # "Merchandise Total:" on the lease SPACE INFORMATION card.
     rows = re.split(
-        r"\btotal\s+cost\s+to\s+move-?in\b|\btotal\s+move-?in\s+cost\b",
+        r"\btotal\s+(?:cost|paid)\s+to\s+move-?in\b|\btotal\s+move-?in\s+cost\b",
         rows,
         maxsplit=1,
         flags=re.I,
@@ -221,7 +386,7 @@ def parse_charges_from_summary_text(text: str) -> dict[str, float]:
         if not label:
             continue
         # Skip footer-style totals; keep Total Tax / Total Rent / Total Promotions.
-        if re.match(r"total\s+cost\b", label, re.I):
+        if re.match(r"total\s+(?:cost|paid)\b", label, re.I):
             continue
         if re.match(r"total\s+move-?in\b", label, re.I):
             continue
@@ -573,6 +738,9 @@ def assert_costs_match_three_ways(
     line_items: bool | None = None,
     wrap_step: bool = True,
     space_number: str | None = None,
+    lease_column: str = "Lease document",
+    email_column: str = "Email",
+    report_name: str = "total-price-validation",
 ) -> None:
     """Compare costs across MP confirmation, email, and lease PDF.
 
@@ -583,6 +751,9 @@ def assert_costs_match_three_ways(
     ``space_number`` scopes lease PDF parsing to that unit's block
     (multi-space Superleases). Always attaches parsed-costs for MP /
     email / lease.
+
+    ``lease_column`` / ``email_column`` / ``report_name`` customize Allure
+    attachment titles (e.g. Updated Superlease second compare for Two-Step).
 
     Pass ``wrap_step=False`` when the caller already opened an Allure step
     with this name (avoids a nested duplicate).
@@ -609,6 +780,29 @@ def assert_costs_match_three_ways(
         lease_text or ""
     )
 
+    # Two-Step Pay Now email omits coverage/protection from its total; treat
+    # email_total + those lines as matching MP / lease for status only.
+    email_total_for_status = email_total
+    if (
+        email_text
+        and TWO_STEP_PAY_NOW_EMAIL_MARKER.lower() in email_text.lower()
+        and email_total is not None
+        and total is not None
+        and not _amounts_equal(email_total, total)
+    ):
+        omitted = coverage_or_protection_total(raw_mp) or coverage_or_protection_total(
+            {label: amt for label, amt in email_charges.items()}
+        )
+        if omitted and _amounts_equal(email_total + omitted, total):
+            email_total_for_status = total
+            allure.attach(
+                f"Email Total Cost {format_money(email_total)} + omitted "
+                f"coverage/protection {format_money(omitted)} = "
+                f"MP/lease {format_money(total)} (Two-Step Pay Now email quirk).",
+                name="two-step-email-total-aligned",
+                attachment_type=allure.attachment_type.TEXT,
+            )
+
     if total is None and not raw_mp:
         raise AssertionError(
             "No Total Cost to Move-in (and no line items) on the MP "
@@ -625,16 +819,17 @@ def assert_costs_match_three_ways(
 
     step = (
         allure.step(
-            "Compare costs: MP confirmation | email | lease agreement"
+            f"Compare costs: MP confirmation | {email_column} | {lease_column}"
             + ("" if check_lines else " (Total Cost to Move-in only)")
         )
         if wrap_step
         else nullcontext()
     )
     with step:
-        lease_label = "parsed-costs (lease document)"
+        lease_attach = f"parsed-costs ({lease_column})"
         if space_number:
-            lease_label = f"parsed-costs (lease document #{space_number})"
+            lease_attach = f"parsed-costs ({lease_column} #{space_number})"
+        email_attach = f"parsed-costs ({email_column})"
         allure.attach(
             "\n".join(f"{label}: {format_money(amt)}" for label, amt in raw_mp.items())
             + (f"\nTOTAL: {format_money(total)}" if total is not None else ""),
@@ -650,7 +845,7 @@ def assert_costs_match_three_ways(
                 if email_total is not None
                 else ""
             ),
-            name="parsed-costs (email)",
+            name=email_attach,
             attachment_type=allure.attachment_type.TEXT,
         )
         allure.attach(
@@ -662,12 +857,12 @@ def assert_costs_match_three_ways(
                 if lease_total is not None
                 else ""
             ),
-            name=lease_label,
+            name=lease_attach,
             attachment_type=allure.attachment_type.TEXT,
         )
 
         text_rows: list[str] = [
-            "key | MP confirmation | email | lease | result",
+            f"key | MP confirmation | {email_column} | {lease_column} | result",
             "-" * 88,
         ]
         html_rows: list[str] = []
@@ -683,9 +878,9 @@ def assert_costs_match_three_ways(
             else:
                 email_label, email_amt = None, None
             if key in lease_map:
-                lease_label, lease_amt = lease_map[key]
+                row_lease_label, lease_amt = lease_map[key]
             else:
-                lease_label, lease_amt = None, None
+                row_lease_label, lease_amt = None, None
 
             mp_amt, email_amt, lease_amt = _align_source_amounts(
                 key,
@@ -694,7 +889,7 @@ def assert_costs_match_three_ways(
                 email_amt,
                 email_label,
                 lease_amt,
-                lease_label,
+                row_lease_label,
             )
 
             required = key in mp_map
@@ -722,11 +917,18 @@ def assert_costs_match_three_ways(
                 )
 
         total_status = _status(
-            total, email_total, lease_total, required=total is not None
+            total, email_total_for_status, lease_total, required=total is not None
         )
+        total_display_note = ""
+        if (
+            email_total_for_status is not None
+            and email_total is not None
+            and not _amounts_equal(email_total_for_status, email_total)
+        ):
+            total_display_note = f" (email printed {_cell(email_total)}; coverage omitted)"
         text_rows.append(
             f"Total Cost to Move-in | {_cell(total)} | {_cell(email_total)} | "
-            f"{_cell(lease_total)} | {total_status}"
+            f"{_cell(lease_total)} | {total_status}{total_display_note}"
         )
         html_rows.append(
             "<tr style='background:#f5f5f5'>"
@@ -745,34 +947,33 @@ def assert_costs_match_three_ways(
             )
 
         table = "\n".join(text_rows)
-        # One HTML matrix for the report; text dump only when line items run
-        # (or on mismatch so the assert message still has a table).
         report_html = (
-            "<h3>Cost comparison: MP rental page | Email | Lease document</h3>"
+            f"<h3>Cost comparison: MP confirmation | {html_lib.escape(email_column)} | "
+            f"{html_lib.escape(lease_column)}</h3>"
             f"<p style='color:#666;font-size:12px'>Mode: "
             f"{'line items + total' if check_lines else 'Total Cost to Move-in only'}"
             "</p>"
             "<table border='1' cellpadding='6' cellspacing='0' "
             "style='border-collapse:collapse;font-family:sans-serif'>"
             "<tr style='background:#eee'>"
-            "<th>Charge</th><th>MP confirmation</th><th>Email</th>"
-            "<th>Lease document</th><th>Result</th></tr>"
+            f"<th>Charge</th><th>MP confirmation</th><th>{html_lib.escape(email_column)}</th>"
+            f"<th>{html_lib.escape(lease_column)}</th><th>Result</th></tr>"
             + "".join(html_rows)
             + "</table>"
         )
         allure.attach(
             report_html,
-            name="total-price-validation",
+            name=report_name,
             attachment_type=allure.attachment_type.HTML,
         )
         if check_lines or mismatches:
             allure.attach(
                 table,
-                name="cost-compare-mp-email-lease",
+                name=f"cost-compare-{report_name}",
                 attachment_type=allure.attachment_type.TEXT,
             )
         assert not mismatches, (
-            "Cost mismatch across MP confirmation / email / lease agreement:\n"
+            f"Cost mismatch across MP confirmation / {email_column} / {lease_column}:\n"
             + "\n".join(mismatches)
             + "\n\n"
             + table

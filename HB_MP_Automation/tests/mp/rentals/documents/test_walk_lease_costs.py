@@ -20,7 +20,7 @@ from common_utils.browser_sessions import (
     desktop_context_options,
     prepare_desktop_page,
 )
-from common_utils.mailinator_utils import (
+from common_utils.email_utils import (
     find_email_link,
     get_email_plain_text,
     get_email_text,
@@ -58,7 +58,6 @@ def _money_lines(text: str) -> str:
 @allure.story("Walk: lease cost sources after confirmation")
 @pytest.mark.usefixtures("legacy_superlease_signing")
 @pytest.mark.mp_rental
-@pytest.mark.legacy_superlease
 class TestWalkLeaseCostSources:
     @allure.title("Walk Super Lease costs in email + lease document + HB")
     @pytest.mark.card

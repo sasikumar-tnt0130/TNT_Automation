@@ -2,34 +2,54 @@
 
 from __future__ import annotations
 
+import importlib.util
+from pathlib import Path
+
 import pytest
 
-from common_utils.lease_configuration_setup import LeaseConfigurationSetup
+# Rentals helpers — same loader as tests/mp/rentals/conftest.
+_helpers_spec = importlib.util.spec_from_file_location(
+    "mp_rentals_helpers_for_mp",
+    Path(__file__).resolve().parent / "rentals" / "_helpers.py",
+)
+assert _helpers_spec is not None and _helpers_spec.loader is not None
+_helpers = importlib.util.module_from_spec(_helpers_spec)
+_helpers_spec.loader.exec_module(_helpers)
+_ensure_two_step_superlease = _helpers.ensure_two_step_superlease
+_ensure_legacy_traditional = _helpers.ensure_legacy_traditional
 
 
 @pytest.fixture(scope="module")
 def two_step_superlease_checked(
-    hb_admin_session, environment_config, app_config, two_step_property
+    hb_admin_session,
+    environment_config,
+    app_config,
+    two_step_property,
 ) -> None:
-    """Ensure Two-Step property has Super Lease + Clickwrap + Two-Step on.
+    """Once: APW + Two-Step/Clickwrap/Super Lease + Advance Days + Clear Cache."""
+    import os
 
-    Enables (and flushes website cache) when needed so the storefront
-    serves ``Reserve Now`` rather than Legacy ``Reserve This Space``.
-    Used by gateway rental matrices and standalone Two-Step smoke tests.
-    """
-    signing = LeaseConfigurationSetup(
+    # SKIP_LEASE_ENSURE=1: storefront already serves Two-Step (e.g. shared
+    # legacy/two_step property). Avoids hanging Lease Configuration UI.
+    if os.environ.get("SKIP_LEASE_ENSURE", "").strip() in {"1", "true", "yes"}:
+        return
+    _ensure_two_step_superlease(
         hb_admin_session,
         environment_config,
         app_config,
-        property_name=two_step_property.lease_configuration_property_name,
-        fms_property_name=two_step_property.fms_property_name,
-        hb_property_name=two_step_property.hb_property_name,
+        two_step_property,
     )
-    signing.enable_two_step_clickwrap_and_super_lease()
-    signing.flush_website_cache()
 
 
-# Clearer alias for callers that want the enable semantics spelled out.
-# Safe when legacy_property == two_step_property: each suite's signing
-# fixture reconfigures Two-Step on/off for that module before the run.
+@pytest.fixture(scope="module")
+def legacy_traditional_checked(
+    hb_admin_session, environment_config, app_config
+) -> None:
+    """Once: APW + Advance Days + Traditional (Two-Step/CW/SL off) + Clear Cache."""
+    _ensure_legacy_traditional(
+        hb_admin_session, environment_config, app_config
+    )
+
+
+# Historical alias — same fixture (usefixtures / reservations / account).
 ensure_two_step_superlease = two_step_superlease_checked

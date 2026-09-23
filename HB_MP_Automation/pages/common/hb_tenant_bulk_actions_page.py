@@ -102,7 +102,7 @@ class HBTenantBulkActionsPage:
     def _apply_search(self, search_term: str) -> None:
         # Seen 2026-09-13 (Bellflower): the search, typed right after a
         # fresh Tenants load, was gone by the time tenants were selected -
-        # select-all took the whole property (the Mailinator check refused
+        # select-all took the whole property (the test-inbox check refused
         # the send). One matching cell doesn't prove the filter applied:
         # unfiltered, the lowest space numbers are this suite's own
         # tenants. So re-type until the box keeps the term and every

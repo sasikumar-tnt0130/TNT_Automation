@@ -4,7 +4,7 @@ import allure
 from playwright.sync_api import Locator, Page, expect
 
 from common_utils.wrapper_methods import log_method_exceptions
-from pages.common.hb_communication_compose_page import MAILINATOR
+from pages.common.hb_communication_compose_page import TEST_INBOX
 
 # (707)/(714) 555-0100..0199 only - the range reserved for fictional use.
 FICTIONAL_NUMBER = re.compile(r"^(707|714)55501\d\d$")
@@ -73,11 +73,11 @@ class HBAdditionalContactsPage:
     def add_contact(self, contact: dict, designation: str, spaces: list[str], sms: bool = False) -> None:
         """Adds `contact` (first_name, last_name, email, phone_number) as
         `designation` for `spaces` on the tenant page that's open - with SMS
-        on only when `sms`. Refuses anything but a Mailinator email and a
+        on only when `sms`. Refuses anything but the Gmail test inbox and a
         fictional (707)/(714) 555-01xx number."""
-        if not MAILINATOR.search(contact["email"]) or not FICTIONAL_NUMBER.match(contact["phone_number"]):
+        if not TEST_INBOX(contact["email"]) or not FICTIONAL_NUMBER.match(contact["phone_number"]):
             raise AssertionError(
-                f"Not adding {contact['email']} / {contact['phone_number']} - only a Mailinator"
+                f"Not adding {contact['email']} / {contact['phone_number']} - only a test-inbox"
                 " email and a fictional 555-01xx number"
             )
         name = f"{contact['first_name']} {contact['last_name']}"

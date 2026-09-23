@@ -16,7 +16,8 @@ from pages.mariposa.mp_rental_payment_form import (
 
 # Sandbox PANs for format coverage (must be accepted by the gateway under test).
 PAN_16 = "4111111111111111"  # Visa → 3-digit CVV
-PAN_19 = "6210945888040000007"  # up to 19 digits
+# 19-digit: Tenant Payments only — non-tenant (Authorize.Net) rejects this PAN.
+PAN_19 = "6210945888040000007"
 PAN_AMEX = "378282246310005"  # Amex → 4-digit CVV
 CVV_3 = "123"
 CVV_4 = "1234"

@@ -297,9 +297,9 @@ class MPFMSInitialSetupPage:
             return int(value) if value else None
 
     @log_method_exceptions
-    def set_advance_reservation_days(self, property_id: str, days: int) -> None:
+    def set_advance_reservation_days(self, property_id: str, days: int) -> bool:
         """Sets Advance Reservation Days for a property. No-ops the
-        field write if already set to `days`.
+        field write if already set to `days`. Returns True if Saved.
 
         Does not Clear Cache; callers flush once via
         ``LeaseConfigurationSetup.flush_website_cache``.
@@ -321,24 +321,35 @@ class MPFMSInitialSetupPage:
                     expect(field).to_have_value(
                         str(days), timeout=self.timeout
                     )
-            else:
-                with allure.step(
-                    f"Skip Save (Advance Reservation Days already {days})"
-                ):
-                    pass
+                return True
+            with allure.step(
+                f"Skip Save (Advance Reservation Days already {days})"
+            ):
+                pass
+            return False
 
     @log_method_exceptions
     def open_two_step_settings(self, property_name: str) -> None:
         with allure.step("Open Two-Step Rental settings"):
             # Do not Escape-dismiss here — Settings is a v-dialog; Escape
             # closes the panel (see HBSettingsNavigation.select_property).
+            # Open Settings first — switch_app_filter_to_website needs the
+            # panel's Filter control (2026-09-19: called on dashboard alone
+            # timed out waiting for textbox "Filter").
+            self.nav.open_settings_panel()
             fms_initial_setup = self.page.locator(
                 ".setting-menu-list-inactive-color, .setting-menu-list-active-color",
                 has_text="FMS Initial Setup",
             )
-            if not fms_initial_setup.is_visible():
+            for _ in range(3):
                 self.nav.switch_app_filter_to_website()
-            expect(fms_initial_setup).to_be_visible(timeout=self.timeout)
+                try:
+                    expect(fms_initial_setup).to_be_visible(timeout=waits().long)
+                    break
+                except AssertionError:
+                    continue
+            else:
+                expect(fms_initial_setup).to_be_visible(timeout=self.timeout)
             fms_initial_setup.click()
             self.nav.select_property(property_name)
             two_step_label = self.page.get_by_text(
@@ -442,7 +453,7 @@ class MPFMSInitialSetupPage:
                         # Clear Cache is owned by LeaseConfigurationSetup
                         # (flush_website_cache / mid-enable eligibility). Wait
                         # here for FMS eligibility lag after reload only.
-                        self.page.wait_for_timeout(waits().long)
+                        self.page.wait_for_timeout(waits().settle_medium)
                         continue
                 with allure.step(
                     f"Toggle Two-Step to {desired} "
@@ -534,7 +545,7 @@ class MPFMSInitialSetupPage:
                             raise
                         with allure.step(
                             f"Recover Two-Step toggle "
-                            f"(reload, wait) "
+                            f"(reload, wait for eligibility) "
                             f"before attempt {attempt + 2}"
                         ):
                             # Confirmed live (2026-09-08, stage): a failure
@@ -547,18 +558,23 @@ class MPFMSInitialSetupPage:
                             expect(
                                 self.page.locator(".v-overlay--active")
                             ).to_be_hidden(timeout=self.timeout)
-                            # Confirmed live (2026-09-09, stage): even a
-                            # genuinely fresh login/session hit this same
-                            # rejection immediately after Super Lease/
-                            # Clickwrap were enabled. What's left is a
-                            # backend propagation delay: FMS eligibility
-                            # lags behind the write. A real wait - not just
-                            # a reload - is what gives that time to catch up.
-                            # Clear Cache is not retried here (stacked mid-
-                            # flow clears caused warm/loading flakes); the
-                            # caller flushes once via flush_website_cache.
+                            # Backend eligibility can lag Super Lease/
+                            # Clickwrap writes. Poll the FMS panel instead of
+                            # a fixed 20s sleep (was burning every retry).
                             self.page.reload(wait_until="load")
-                            self.page.wait_for_timeout(20000)
+                            self.open_two_step_settings(property_name)
+                            requirements = self.page.get_by_text(
+                                "To activate 2-Step Rental", exact=False
+                            )
+                            try:
+                                expect(requirements.first).to_be_hidden(
+                                    timeout=waits().long
+                                )
+                            except AssertionError:
+                                # Still blocked — next attempt retries toggle.
+                                pass
+                            # Brief settle after remount before re-click.
+                            self.page.wait_for_timeout(waits().settle_short)
             # Do not Clear Cache here — LeaseConfigurationSetup /
             # Mariposa precondition flush_website_cache runs once at the end.
 

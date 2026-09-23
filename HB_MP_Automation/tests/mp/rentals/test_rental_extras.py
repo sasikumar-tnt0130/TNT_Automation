@@ -14,6 +14,8 @@ import uuid
 import allure
 import pytest
 
+from common_utils.email_providers import test_inbox_address
+
 from common_utils.browser_sessions import (
     close_context_with_videos,
     desktop_context_options,
@@ -50,7 +52,7 @@ def _extras_for(guest: dict, rental_data: dict, *, include_vehicle: bool) -> dic
         "lien_holder": {
             "first_name": "Lien",
             "last_name": f"Bank{suffix}",
-            "email": f"lien-{suffix}@mailinator.com",
+            "email": test_inbox_address(f"lien-{suffix}"),
             "phone": "(714) 555-0177",
             "address1": rental_data["address1"],
             "address2": rental_data.get("address2", ""),
@@ -159,7 +161,10 @@ def _run_extras_rental(
 
 @allure.feature("MP Rentals")
 @allure.story("Legacy Flow - rental extras")
-@pytest.mark.usefixtures("legacy_traditional_signing")
+@pytest.mark.usefixtures(
+    "ensure_autotest_document_templates",
+    "legacy_traditional_signing",
+)
 class TestRentalExtras:
     @allure.title(
         "Legacy Flow-Storage rental with coverage, vehicle, autopay, military, lien holder, ACH"

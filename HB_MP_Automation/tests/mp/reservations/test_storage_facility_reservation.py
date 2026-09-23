@@ -6,9 +6,17 @@ import pytest
 
 from common_utils.mp_legacy_reservation_setup import MPLegacyReservationSetup
 from common_utils.mp_two_step_reservation_setup import MPTwoStepReservationSetup
-from config.config_reader import load_property
-from pages.common.hb_lead_management_page import HBLeadManagementPage
 from pages.common.hb_lead_follow_up_page import HBLeadFollowUpPage
+from pages.common.hb_lead_management_page import HBLeadManagementPage
+from tests.mp.reservations._helpers import ensure_legacy_reservation_flow
+
+
+@pytest.fixture(scope="module")
+def _legacy_precondition(hb_admin_session, environment_config, app_config) -> None:
+    """Ensure Legacy traditional so ambient Two-Step does not break this smoke."""
+    ensure_legacy_reservation_flow(
+        hb_admin_session, environment_config, app_config
+    )
 
 
 @allure.title("A guest reservation shows its reservation code and emails a matching confirmation")
@@ -16,15 +24,14 @@ from pages.common.hb_lead_follow_up_page import HBLeadFollowUpPage
 @allure.story("Show Reservation Code + Validate Tenant email for Reservation")
 @pytest.mark.smoke
 @pytest.mark.testrail("C10474")
+@pytest.mark.usefixtures("_legacy_precondition")
 def test_show_reservation_code_and_email(page, environment_config, app_config, mp_guest) -> None:
     # Old Robot suite's 8884 ("Show Reservation Code") and 10603
     # ("Validate Tenant email for Reservation") - one reservation covers
     # both, since 10603 only checks the email 8884's reservation sends.
-    # Deliberately no settings fixture (unlike test_legacy_reservation.py,
-    # whose class fixture rewrites the property's lease configuration):
-    # this relies on the default property already serving Legacy (confirmed
-    # live 2026-09-12, uat_storoutlet: Bellflower, "Reserve This Space"),
-    # and reserve_unit fails clearly if the storefront serves Two-Step.
+    # Precondition: ensure_legacy_reservation_flow (APW + traditional + cache),
+    # same package as rentals — required when legacy_property and
+    # two_step_property share a key (e.g. uat_storoutlet Bellflower).
     if not (environment_config.mp_city and environment_config.mp_state):
         pytest.skip(
             f"No storefront property (mp_city/mp_state) configured for "
@@ -64,11 +71,8 @@ def test_show_reservation_code_and_email_two_step(
     hb_admin_session,
 ) -> None:
     # Same 8884/10603 checks against the environment's Two-Step property
-    # (properties.ini `two_step_property`, e.g. uat_storoutlet/chula_vista
-    # - confirmed live 2026-09-12 serving "Reserve Now"), plus 8881 and 8900
-    # in HB on the same reservation. Added after Bellflower's Legacy
-    # reservations failed server-side (2026-09-13: POST /reservations ->
-    # 400 UnableToReadPMSResponse).
+    # (properties.ini `two_step_property`). Precondition matches rentals:
+    # two_step_superlease_checked (APW + CW/SL/Two-Step + days + Clear Cache).
     property_url = property_landing_page_url(
         environment_config.mp_base_url, two_step_property.mp_state, two_step_property.mp_city
     )

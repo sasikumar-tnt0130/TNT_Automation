@@ -5,7 +5,7 @@ import allure
 import pytest
 from playwright.sync_api import expect
 
-from common_utils.mailinator_utils import get_email_plain_text, wait_for_email
+from common_utils.email_utils import get_email_plain_text, wait_for_email
 from pages.common.hb_communication_compose_page import CARD_KINDS, SENT_TODAY, HBCommunicationComposePage
 from pages.common.hb_lead_management_page import HBLeadManagementPage
 from pages.common.hb_leads_grid_page import HBLeadsGridPage
@@ -14,7 +14,7 @@ from pages.hummingbird.hb_quick_launch_page import HBQuickLaunchPage
 
 # Old Robot Unified_Communications/Communications_test. The tenants are created
 # for the session (hb_comm_tenants / hb_two_space_tenant, tests/hb/conftest.py).
-# Emails go only to Mailinator test inboxes and texts only to fictional
+# Emails go only to the Gmail test inbox and texts only to fictional
 # (707)/(714) 555-01xx numbers - HBCommunicationComposePage refuses anything
 # else (user choices 2026-09-14). Robot's own alternate contact (an Outlook
 # address and a +91 mobile) is never used.
@@ -146,7 +146,7 @@ def test_send_from_communication_center(hb_login_page, app_config, hb_comm_tenan
 @allure.story("Communications")
 def test_send_from_lead(hb_login_page, app_config, test_data) -> None:
     # 14801: the first lead in the Reservations view - a storefront guest
-    # (Mailinator email, (714) 555-01xx phone); the sends refuse otherwise.
+    # (Gmail test inbox, (714) 555-01xx phone); the sends refuse otherwise.
     lead_property = test_data("communication").get("lead_property")
     if not lead_property:
         pytest.skip("No lead property configured for this environment")

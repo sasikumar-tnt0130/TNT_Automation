@@ -3,6 +3,6 @@ pytest
 playwright
 pytest-playwright
 pytest-rerunfailures
-pypdf
+python-docx
 pymupdf
 imageio-ffmpeg
