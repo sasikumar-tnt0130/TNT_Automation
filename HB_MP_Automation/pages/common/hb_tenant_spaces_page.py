@@ -211,6 +211,33 @@ class HBTenantSpacesPage:
                 )
 
     @log_method_exceptions
+    def _assert_row_names_guest(self, row, guest_name: str) -> None:
+        """The row must be this guest. The Tenant Name cell usually contains
+        the full name ("Auto Tester"). A business rental on Bellflower
+        (2026-09-23, space 0024C) stored only the first name in that cell
+        ("Auto") while the space, phone, and Current status were correct."""
+        row_text = row.inner_text() or ""
+        if guest_name in row_text:
+            return
+        first = guest_name.split()[0] if guest_name else ""
+        name_cells = row.get_by_role("gridcell")
+        shown = ""
+        if name_cells.count() > 1:
+            shown = " ".join((name_cells.nth(1).inner_text() or "").split())
+        if shown and (
+            shown == guest_name
+            or shown == first
+            or shown.startswith(f"{guest_name} ")
+        ):
+            allure.attach(
+                f"Tenant Name cell is {shown!r}; guest is {guest_name!r}.",
+                name="tenant name",
+                attachment_type=allure.attachment_type.TEXT,
+            )
+            return
+        expect(row).to_contain_text(guest_name)
+
+    @log_method_exceptions
     def _tenant_row_by_space(self, space_number: str, guest_name: str):
         """The Tenants row of a storefront rental, found by its space number
         (user suggestion 2026-09-15): every storefront guest is "Auto Tester"
@@ -237,7 +264,7 @@ class HBTenantSpacesPage:
             except AssertionError:
                 if attempt == 2:
                     raise
-        expect(row).to_contain_text(guest_name)
+        self._assert_row_names_guest(row, guest_name)
         return row
 
     @log_method_exceptions

@@ -26,7 +26,7 @@ def test_void_remove_autopay_and_move_out(
     app_config,
     mp_guest,
     two_step_property,
-    property_landing_page_url,
+    mp_property_landing_urls,
     hb_admin_session,
     test_data,
 ) -> None:
@@ -35,9 +35,7 @@ def test_void_remove_autopay_and_move_out(
     # OP1): void the payment, void the invoice it paid (a reason is
     # required), remove the AutoPay card, move out. Each run creates a
     # tenant and a sandbox card charge, then voids it and closes the lease.
-    property_url = property_landing_page_url(
-        environment_config.mp_base_url, two_step_property.mp_state, two_step_property.mp_city
-    )
+    property_url = mp_property_landing_urls["two_step"]
     timeout = app_config.getint("browser", "timeout")
     rental_data = test_data("mp_rental")
     guest_name = f"{mp_guest['first_name']} {mp_guest['last_name']}"

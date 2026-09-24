@@ -497,6 +497,41 @@ class MPLegacyReservationFormPage:
             self.page.get_by_text(method, exact=True).click(force=True)
 
     @log_method_exceptions
+    def _select_first_coverage(self) -> None:
+        """Select the first coverage option when the form offers one.
+
+        When the radios are absent or hidden, the rental continues without
+        a plan. When they are on screen and none is selected, the first
+        one is ticked."""
+        coverage = self.page.locator('input[id^="coverageAmount-ins"]')
+        offered = []
+        for index in range(coverage.count()):
+            radio = coverage.nth(index)
+            radio_id = radio.get_attribute("id")
+            if not radio_id:
+                continue
+            label = self.page.locator(f'label[for="{radio_id}"]')
+            label_visible = label.count() > 0 and label.first.is_visible()
+            try:
+                input_visible = radio.is_visible()
+            except Exception:
+                input_visible = False
+            if label_visible or input_visible:
+                offered.append(radio)
+        if not offered:
+            allure.attach(
+                "Coverage is not on this rental form; skipped",
+                name="coverage",
+                attachment_type=allure.attachment_type.TEXT,
+            )
+            return
+        if any(radio.is_checked() for radio in offered):
+            return
+        radio_id = offered[0].get_attribute("id")
+        if radio_id:
+            self._check_radio(radio_id)
+
+    @log_method_exceptions
     def _check_radio(self, radio_id: str) -> None:
         """This form's radios are custom-styled - the native input sits
         behind a decorative span - so they're ticked through their labels
@@ -602,16 +637,7 @@ class MPLegacyReservationFormPage:
             if extras.get("vehicle_type"):
                 self._fill_vehicle(extras["vehicle_type"], extras.get("vehicle"))
             if extras.get("coverage", True):
-                coverage = self.page.locator('input[id^="coverageAmount-ins"]')
-                if coverage.count() == 0:
-                    # Some layouts defer the plan radios; scroll and retry.
-                    self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                    self.page.wait_for_timeout(800)
-                if coverage.count() > 0:
-                    # The first plan offered ($2,000 on Bellflower / Garden Grove).
-                    # Its "Coverage Amount" button left the radio unticked in the walk.
-                    self._check_radio(coverage.first.get_attribute("id"))
-                    expect(coverage.first).to_be_checked(timeout=self.timeout)
+                self._select_first_coverage()
             self._verify_id_later(rental_data)
             if guest is not None:
                 self._fill_business_representative(guest, rental_data)

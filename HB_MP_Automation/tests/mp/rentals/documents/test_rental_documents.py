@@ -54,7 +54,7 @@ def _run_document_rental(
     environment_config,
     app_config,
     mp_guest,
-    property_landing_page_url,
+    mp_property_landing_urls,
     hb_login_page,
     test_data,
     move_out_after_rental: bool,
@@ -72,9 +72,9 @@ def _run_document_rental(
         pytest.skip("No storefront / HB property configured for this environment")
 
     timeout = app_config.getint("browser", "timeout")
-    property_url = property_landing_page_url(
-        environment_config.mp_base_url, prop.mp_state, prop.mp_city
-    )
+    property_url = mp_property_landing_urls["legacy"]
+    if not property_url:
+        pytest.skip("No legacy storefront landing URL configured")
     rental_data = test_data("mp_rental")
     guest_name = (
         f"{mp_guest['first_name']} {mp_guest['last_name']} Business"
@@ -204,8 +204,8 @@ def _for_each_space_type(
                     environment_config=request.getfixturevalue("environment_config"),
                     app_config=request.getfixturevalue("app_config"),
                     mp_guest=guest,
-                    property_landing_page_url=request.getfixturevalue(
-                        "property_landing_page_url"
+                    mp_property_landing_urls=request.getfixturevalue(
+                        "mp_property_landing_urls"
                     ),
                     hb_login_page=request.getfixturevalue("hb_admin_session"),
                     test_data=request.getfixturevalue("test_data"),
@@ -297,7 +297,7 @@ class TestRentalDocuments:
         environment_config,
         app_config,
         mp_guest,
-        property_landing_page_url,
+        mp_property_landing_urls,
         hb_admin_session,
         test_data,
         move_out_after_rental,
@@ -311,7 +311,7 @@ class TestRentalDocuments:
             environment_config=environment_config,
             app_config=app_config,
             mp_guest=mp_guest,
-            property_landing_page_url=property_landing_page_url,
+            mp_property_landing_urls=mp_property_landing_urls,
             hb_login_page=hb_admin_session,
             test_data=test_data,
             move_out_after_rental=move_out_after_rental,
@@ -358,8 +358,8 @@ class TestRentalDocuments:
                 environment_config=request.getfixturevalue("environment_config"),
                 app_config=request.getfixturevalue("app_config"),
                 mp_guest=new_mp_guest(),
-                property_landing_page_url=request.getfixturevalue(
-                    "property_landing_page_url"
+                mp_property_landing_urls=request.getfixturevalue(
+                    "mp_property_landing_urls"
                 ),
                 hb_login_page=request.getfixturevalue("hb_admin_session"),
                 test_data=request.getfixturevalue("test_data"),
@@ -466,7 +466,7 @@ class TestRentalDocuments:
         environment_config,
         app_config,
         mp_guest,
-        property_landing_page_url,
+        mp_property_landing_urls,
         hb_admin_session,
         test_data,
         move_out_after_rental,
@@ -480,7 +480,7 @@ class TestRentalDocuments:
             environment_config=environment_config,
             app_config=app_config,
             mp_guest=mp_guest,
-            property_landing_page_url=property_landing_page_url,
+            mp_property_landing_urls=mp_property_landing_urls,
             hb_login_page=hb_admin_session,
             test_data=test_data,
             move_out_after_rental=move_out_after_rental,

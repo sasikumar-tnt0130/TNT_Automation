@@ -333,7 +333,7 @@ def rental_case_runner(
     environment_config,
     app_config,
     mp_guest,
-    property_landing_page_url,
+    mp_property_landing_urls,
     test_data,
     gateway_profile,
 ):
@@ -368,17 +368,11 @@ def rental_case_runner(
             storefront_page = request.getfixturevalue("mobile_page")
         else:
             storefront_page = hb_admin_session.page
-        _log.info(
-            "Property landing discovery on shared tab for %s / %s",
-            property_config.mp_state,
-            property_config.mp_city,
-        )
-        property_url = property_landing_page_url(
-            environment_config.mp_base_url,
-            property_config.mp_state,
-            property_config.mp_city,
-            page=storefront_page,
-        )
+        role = "two_step" if two_step else "legacy"
+        property_url = mp_property_landing_urls[role]
+        if not property_url:
+            pytest.skip(f"No {role} storefront landing URL for {environment}")
+        _log.info("Using stored %s landing URL: %s", role, property_url)
         rental_data = test_data("mp_rental")
         if gateway_profile:
             method = "ACH" if case.payment == "ach" else "Credit Cards"

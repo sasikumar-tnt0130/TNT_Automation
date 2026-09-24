@@ -460,6 +460,41 @@ def property_landing_page_url(
         )
 
 
+@pytest.fixture(scope="session")
+def mp_property_landing_urls(
+    app_config,
+    environment: str,
+    environment_config: EnvironmentConfig,
+    property_landing_page_url: Callable[..., str],
+) -> dict[str, str | None]:
+    """Legacy and Two-Step storefront landing URLs, discovered once per session.
+
+    Tests open these with a direct goto. They do not search state/city on
+    the test page — that search on a phone viewport stays on the city list.
+    """
+    stored: dict[str, str | None] = {"legacy": None, "two_step": None}
+    for role in ("legacy", "two_step"):
+        try:
+            prop = property_for_role(app_config, environment, role)
+        except ValueError:
+            continue
+        if not (prop.mp_state and prop.mp_city):
+            continue
+        stored[role] = property_landing_page_url(
+            environment_config.mp_base_url,
+            prop.mp_state,
+            prop.mp_city,
+        )
+        logging.getLogger("hb_mp").info(
+            "Stored %s landing URL (%s / %s): %s",
+            role,
+            prop.mp_state,
+            prop.mp_city,
+            stored[role],
+        )
+    return stored
+
+
 @pytest.fixture
 def mp_property_url(
     environment_config: EnvironmentConfig,

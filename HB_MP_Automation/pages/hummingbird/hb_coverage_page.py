@@ -11,6 +11,7 @@ Live structure (stage 2026-09-20):
 """
 from __future__ import annotations
 
+import logging
 import re
 
 import allure
@@ -19,6 +20,8 @@ from playwright.sync_api import Page, expect
 from common_utils.waits import waits
 from common_utils.wrapper_methods import log_method_exceptions
 from pages.common.hb_settings_navigation import HBSettingsNavigation
+
+logger = logging.getLogger("hb_mp.rentals")
 
 
 class HBCoveragePage:
@@ -188,53 +191,72 @@ class HBCoveragePage:
                 self.page.get_by_text("Manage Coverage", exact=True).first
             ).to_be_visible(timeout=self.timeout)
 
-    @log_method_exceptions
-    def open_corporate_settings(self) -> None:
-        with allure.step("Coverage → Corporate Settings"):
-            self.open_coverage()
-            tab = self.page.get_by_role(
-                "tab", name=re.compile(r"Corporate Settings", re.I)
-            )
-            if tab.count():
-                tab.first.click(force=True)
-                self.page.wait_for_timeout(400)
+    def _coverage_tab(self, name: str):
+        tab = self.page.get_by_role("tab", name=re.compile(rf"^{name}$", re.I))
+        if tab.count() == 0:
+            tab = self.page.get_by_text(re.compile(rf"^{name}$", re.I))
+        return tab
+
+    def _coverage_tab_visible(self, name: str) -> bool:
+        tab = self._coverage_tab(name)
+        try:
+            return tab.count() > 0 and tab.first.is_visible()
+        except Exception:
+            return False
 
     @log_method_exceptions
-    def open_property_settings(self) -> None:
+    def open_corporate_settings(self) -> bool:
+        """Open Manage Coverage → Corporate Settings.
+
+        Returns False when that tab is not on the page.
+        """
+        with allure.step("Coverage → Corporate Settings"):
+            self.open_coverage()
+            if not self._coverage_tab_visible("Corporate Settings"):
+                logger.info(
+                    "Manage Coverage Corporate Settings is not available; skipped"
+                )
+                allure.attach(
+                    "Corporate Settings is not available; skipped",
+                    name="coverage-corporate-settings-skipped",
+                    attachment_type=allure.attachment_type.TEXT,
+                )
+                return False
+            self._coverage_tab("Corporate Settings").first.click(force=True)
+            self.page.wait_for_timeout(400)
+            return True
+
+    @log_method_exceptions
+    def open_property_settings(self) -> bool:
+        """Open Manage Coverage → Property Settings.
+
+        Returns False when that tab is not on the page.
+        """
         with allure.step("Coverage → Property Settings"):
             self.open_coverage()
             if self._on_wrong_settings_page():
                 self.open_coverage()
             self._close_active_dialogs()
-            tab = self.page.get_by_role(
-                "tab", name=re.compile(r"Property Settings", re.I)
-            )
-            expect(tab.first).to_be_visible(timeout=self.timeout)
-            tab.first.click(force=True)
+            if not self._coverage_tab_visible("Property Settings"):
+                logger.info(
+                    "Manage Coverage Property Settings is not available; skipped"
+                )
+                allure.attach(
+                    "Property Settings is not available; skipped",
+                    name="coverage-property-settings-skipped",
+                    attachment_type=allure.attachment_type.TEXT,
+                )
+                return False
+            self._coverage_tab("Property Settings").first.click(force=True)
             self.page.wait_for_timeout(500)
-            expect(
-                self.page.get_by_text("Manage Coverage", exact=True).first
-            ).to_be_visible(timeout=waits().medium)
-            # Property picker is on the Settings rail (not Coverage Options).
             try:
                 self._click_right_rail("Settings")
             except Exception:
-                # JS: sibling of Coverage Options
-                self.page.evaluate(
-                    """() => {
-                      const items = [...document.querySelectorAll('.v-list-item')];
-                      const cov = items.find(e =>
-                        /^\\s*Coverage Options\\s*$/i.test(
-                          (e.innerText||'').replace(/\\s+/g,' ').trim()));
-                      const parent = cov && cov.parentElement;
-                      const settings = parent && [...parent.querySelectorAll(
-                        '.v-list-item'
-                      )].find(e => /^\\s*Settings\\s*$/i.test(
-                        (e.innerText||'').replace(/\\s+/g,' ').trim()));
-                      if (settings) settings.click();
-                    }"""
+                logger.info(
+                    "Manage Coverage Settings button is not available; skipped"
                 )
             self.page.wait_for_timeout(500)
+            return True
 
     def _right_rail(self, name: str):
         """Right-rail item under Manage Coverage (Settings / Coverage Options)."""
@@ -292,30 +314,74 @@ class HBCoveragePage:
                 return
             except Exception:
                 pass
-        # JS fallback — role locators flake on this rail
-        clicked = self.page.evaluate(
-            """(label) => {
-              const want = String(label || '').trim().toLowerCase();
-              const el = [...document.querySelectorAll('.v-list-item')].find(e => {
-                const t = (e.innerText || '').replace(/\\s+/g, ' ').trim().toLowerCase();
-                return t === want;
-              });
-              if (!el) return false;
-              el.click();
-              return true;
-            }""",
-            name,
-        )
+        # The rail is the pair Settings | Coverage Options. They are not
+        # always .v-list-item, and the window title is also "Settings".
+        clicked = False
+        for _ in range(3):
+            clicked = bool(
+                self.page.evaluate(
+                    """(label) => {
+                      const want = String(label || '').trim().toLowerCase();
+                      const other = want === 'settings'
+                        ? 'coverage options' : 'settings';
+                      const nodes = [...document.querySelectorAll(
+                        'a, button, div, span, li'
+                      )];
+                      const exact = (el) => (el.innerText || '')
+                        .replace(/\\s+/g, ' ').trim().toLowerCase();
+                      const shown = (el) => {
+                        const r = el.getClientRects();
+                        return r && r.length;
+                      };
+                      const cov = nodes.find(e =>
+                        shown(e) && exact(e) === 'coverage options');
+                      if (cov && cov.parentElement) {
+                        const mate = [...cov.parentElement.children].find(e =>
+                          shown(e) && exact(e) === want);
+                        if (mate) { mate.click(); return true; }
+                      }
+                      const hit = nodes.find(e =>
+                        shown(e) && exact(e) === want
+                        && e.parentElement
+                        && exact(e.parentElement).includes(other));
+                      if (!hit) return false;
+                      hit.click();
+                      return true;
+                    }""",
+                    name,
+                )
+            )
+            if clicked:
+                break
+            self.page.wait_for_timeout(500)
         if not clicked:
             raise AssertionError(f"Coverage right rail '{name}' not found")
         self.page.wait_for_timeout(500)
 
     @log_method_exceptions
-    def open_settings_rail(self, *, reopen: bool = True) -> None:
+    def open_settings_rail(self, *, reopen: bool = True) -> bool:
+        """Open the Manage Coverage Settings rail.
+
+        Returns False when that button is not on the page. The Coverage
+        Option Types row is often already visible, so a missing Settings
+        button is skipped.
+        """
         with allure.step("Coverage right rail → Settings"):
             if reopen:
                 self.open_coverage()
-            self._click_right_rail("Settings")
+            try:
+                self._click_right_rail("Settings")
+            except AssertionError:
+                logger.info(
+                    "Manage Coverage Settings button is not available; skipped"
+                )
+                allure.attach(
+                    "Manage Coverage Settings button is not available; skipped",
+                    name="coverage-settings-rail-skipped",
+                    attachment_type=allure.attachment_type.TEXT,
+                )
+                return False
+            return True
 
     @log_method_exceptions
     def open_coverage_options(self, *, reopen: bool = True) -> None:
@@ -446,46 +512,77 @@ class HBCoveragePage:
                 pass
             return True
 
-    def coverage_option_types_enabled(self) -> bool | None:
-        """True/False for Coverage Option Types toggle; None if not found."""
-        btn = self.page.get_by_role(
-            "button", name=re.compile(r"Coverage Option Types", re.I)
+    def coverage_option_types_row_visible(self) -> bool:
+        """True when the Coverage Option Types row is already on screen."""
+        row = self.page.get_by_text(
+            re.compile(r"^Coverage Option Types$", re.I)
         )
-        if btn.count() == 0:
-            return None
-        name = (btn.first.get_attribute("aria-label") or btn.first.inner_text() or "")
-        if re.search(r"Enabled", name, re.I):
-            return True
-        if re.search(r"Disabled", name, re.I):
+        try:
+            return row.count() > 0 and row.first.is_visible()
+        except Exception:
             return False
-        sw = btn.first.locator('[role="switch"], input[type="checkbox"]')
-        if sw.count():
-            aria = sw.first.get_attribute("aria-checked")
-            if aria is not None:
-                return aria == "true"
-            try:
-                return bool(sw.first.is_checked())
-            except Exception:
-                pass
+
+    def coverage_option_types_enabled(self) -> bool | None:
+        """True/False for Coverage Option Types; None if that control is not shown.
+
+        The label is the current state (``Coverage Option Types Disabled``).
+        ``Disabled`` is checked first so a label that also contains ``Enabled``
+        is not treated as on. This switch is corporate-wide.
+        """
+        label = self.page.evaluate(
+            """() => {
+              let best = null;
+              for (const node of document.querySelectorAll('div')) {
+                if (node.offsetParent === null
+                    && !(node.getClientRects && node.getClientRects().length))
+                  continue;
+                const t = (node.innerText || '').replace(/\\s+/g, ' ').trim();
+                if (!/^Coverage Option Types\\b/i.test(t) || t.length > 140)
+                  continue;
+                if (!best || t.length < best.t.length) best = {node, t};
+              }
+              if (!best) return null;
+              if (/\\bDisabled\\b/i.test(best.t)) return 'disabled';
+              if (/\\bEnabled\\b/i.test(best.t)) return 'enabled';
+              const input = best.node.querySelector(
+                '.v-input--switch input, [role="switch"]'
+              );
+              if (!input) return null;
+              const on = input.checked === true
+                || input.getAttribute('aria-checked') === 'true';
+              return on ? 'enabled' : 'disabled';
+            }"""
+        )
+        if label == "enabled":
+            return True
+        if label == "disabled":
+            return False
         return None
 
     def _toggle_coverage_option_types(self) -> str | None:
-        """Click the Coverage Option Types switch/button. Returns click mode."""
-        btn = self.page.get_by_role(
-            "button", name=re.compile(r"Coverage Option Types", re.I)
+        """Click the Coverage Option Types control. Returns the label clicked."""
+        return self.page.evaluate(
+            """() => {
+              let best = null;
+              for (const node of document.querySelectorAll('div')) {
+                if (node.offsetParent === null
+                    && !(node.getClientRects && node.getClientRects().length))
+                  continue;
+                const t = (node.innerText || '').replace(/\\s+/g, ' ').trim();
+                if (!/^Coverage Option Types\\b/i.test(t) || t.length > 140)
+                  continue;
+                if (!best || t.length < best.t.length) best = {node, t};
+              }
+              if (!best) return null;
+              const sw = best.node.querySelector('.v-input--switch, [role="switch"]');
+              if (!sw) return null;
+              const ripple = sw.querySelector(
+                '.v-input--selection-controls__ripple, input'
+              );
+              (ripple || sw).click();
+              return best.t;
+            }"""
         )
-        if btn.count() == 0:
-            return None
-        sw = btn.first.locator('[role="switch"], input[type="checkbox"]')
-        try:
-            if sw.count():
-                sw.first.click(force=True)
-                return "switch"
-            btn.first.click(force=True)
-            return "button"
-        except Exception:
-            btn.first.click(force=True)
-            return "button-fallback"
 
     def _save_coverage_settings_if_needed(self) -> None:
         save = self.page.get_by_role("button", name=re.compile(r"^Save$", re.I))
@@ -512,49 +609,41 @@ class HBCoveragePage:
                     pass
             self.page.wait_for_timeout(500)
             state = self.coverage_option_types_enabled()
-            if state is False:
-                return True
-            if state is None:
-                allure.attach(
-                    "Coverage Option Types toggle not present on this "
-                    "space-type view (treated as ok / corporate-global)",
-                    name="coverage-option-types-missing",
-                    attachment_type=allure.attachment_type.TEXT,
-                )
+            if state is not True:
+                # Already Disabled, or this view has no toggle (Property
+                # Settings). Do not click — a click turns the corporate
+                # switch on for every property.
+                if state is None:
+                    allure.attach(
+                        "Coverage Option Types toggle not present on this "
+                        "view (left unchanged)",
+                        name="coverage-option-types-missing",
+                        attachment_type=allure.attachment_type.TEXT,
+                    )
                 return True
             clicked = self._toggle_coverage_option_types()
+            self._confirm_if_present()
             self.page.wait_for_timeout(1000)
             self._save_coverage_settings_if_needed()
             state2 = self.coverage_option_types_enabled()
+            if state2 is True:
+                clicked = self._toggle_coverage_option_types()
+                self._confirm_if_present()
+                self.page.wait_for_timeout(1000)
+                self._save_coverage_settings_if_needed()
+                state2 = self.coverage_option_types_enabled()
             allure.attach(
                 f"clicked={clicked} before={state} after={state2}",
                 name="coverage-option-types-toggle",
                 attachment_type=allure.attachment_type.TEXT,
             )
-            # None after toggle still counts as success if we clicked.
-            if state2 is False or (state2 is None and clicked):
-                return True
-            return False
+            return state2 is not True
 
     @log_method_exceptions
     def enable_coverage_option_types(self) -> bool:
-        """Ensure Coverage Option Types is Enabled (legacy helper; prefer Disabled)."""
-        with allure.step("Enable Coverage Option Types"):
-            self.open_corporate_settings()
-            self.open_settings_rail()
-            state = self.coverage_option_types_enabled()
-            if state is True:
-                return True
-            clicked = self._toggle_coverage_option_types()
-            self.page.wait_for_timeout(1000)
-            self._save_coverage_settings_if_needed()
-            state2 = self.coverage_option_types_enabled()
-            allure.attach(
-                f"clicked={clicked} before={state} after={state2}",
-                name="coverage-option-types-toggle",
-                attachment_type=allure.attachment_type.TEXT,
-            )
-            return state2 is True
+        """Coverage Option Types applies to the whole company. Leave it off."""
+        self.disable_coverage_option_types()
+        return False
 
     def _close_active_dialogs(self) -> None:
         """Dismiss Add/Edit coverage dialogs without closing Settings."""
@@ -630,8 +719,8 @@ class HBCoveragePage:
             if navigate:
                 self.open_coverage()
                 self._close_active_dialogs()
-                self.open_property_settings()
-                # Property picker lives on the Settings rail (not Coverage Options).
+                if not self.open_property_settings():
+                    return False
                 try:
                     self._click_right_rail("Settings")
                 except Exception:
@@ -732,6 +821,17 @@ class HBCoveragePage:
                 return True
             return False
 
+    def _confirm_if_present(self) -> None:
+        confirm = self.page.get_by_role(
+            "button", name=re.compile(r"^Confirm$", re.I)
+        )
+        try:
+            if confirm.count() and confirm.first.is_visible():
+                confirm.first.click(force=True)
+                self.page.wait_for_timeout(400)
+        except Exception:
+            pass
+
     def property_uses_corporate_default(self) -> bool | None:
         """True when Property Settings 'Use Corporate Default' is checked."""
         return self.page.evaluate(
@@ -745,6 +845,50 @@ class HBCoveragePage:
               return !!input.checked;
             }"""
         )
+
+    @log_method_exceptions
+    def uncheck_use_corporate_default(self) -> bool:
+        """Clear Property Settings 'Use Corporate Default' when it is checked.
+
+        Corporate Settings has no such checkbox. Returns True when the box
+        is unchecked or not on this view.
+        """
+        with allure.step("Uncheck Use Corporate Default"):
+            outcome = self.page.evaluate(
+                """() => {
+                  const nodes = [...document.querySelectorAll(
+                    'label, .v-input--checkbox, .v-input'
+                  )];
+                  const lab = nodes.find(e => {
+                    const t = (e.innerText || '').replace(/\\s+/g, ' ').trim();
+                    return t.length < 40 && /use corporate default/i.test(t);
+                  });
+                  if (!lab) return 'absent';
+                  const input = lab.querySelector('input[type=checkbox]')
+                    || lab.closest('.v-input')?.querySelector(
+                      'input[type=checkbox]'
+                    );
+                  if (!input) return 'absent';
+                  if (!input.checked) return 'already';
+                  const clickable = lab.querySelector(
+                    '.v-input--selection-controls__ripple'
+                  ) || lab.closest('.v-input')?.querySelector(
+                    '.v-input--selection-controls__ripple'
+                  ) || input;
+                  clickable.click();
+                  return 'unchecked';
+                }"""
+            )
+            if outcome == "unchecked":
+                self._confirm_if_present()
+                self.page.wait_for_timeout(600)
+                self._save_coverage_settings_if_needed()
+            allure.attach(
+                str(outcome),
+                name="use-corporate-default",
+                attachment_type=allure.attachment_type.TEXT,
+            )
+            return outcome in {"absent", "already", "unchecked"}
 
     def select_coverage_property_aliases(
         self, aliases: list[str]

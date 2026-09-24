@@ -22,7 +22,7 @@ def test_my_account_pay_bill_and_autopay(
     app_config,
     mp_guest,
     two_step_property,
-    property_landing_page_url,
+    mp_property_landing_urls,
     hb_admin_session,
     test_data,
 ) -> None:
@@ -31,9 +31,7 @@ def test_my_account_pay_bill_and_autopay(
     # environment's Two-Step property. Walked live 2026-09-13 on
     # uat_storoutlet/Chula Vista. Each run creates a tenant, an online
     # account and two sandbox card charges (the rental and one month ahead).
-    property_url = property_landing_page_url(
-        environment_config.mp_base_url, two_step_property.mp_state, two_step_property.mp_city
-    )
+    property_url = mp_property_landing_urls["two_step"]
     rental_data = test_data("mp_rental")
     guest_name = f"{mp_guest['first_name']} {mp_guest['last_name']}"
     card_last4 = environment_config.card_number[-4:]

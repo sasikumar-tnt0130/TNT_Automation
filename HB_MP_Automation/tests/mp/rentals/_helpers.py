@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import logging
+import re
 from typing import Iterable
 
 from common_utils.browser_sessions import browser_permissions
@@ -12,6 +13,7 @@ from config.config_reader import list_properties, load_gateways, load_property
 from pages.common.hb_lead_scripts_page import HBLeadScriptsPage
 from pages.common.hb_login_page import HBLoginPage
 from pages.common.hb_settings_navigation import HBSettingsNavigation
+from pages.hummingbird.hb_coverage_page import HBCoveragePage
 from pages.hummingbird.hb_quick_launch_page import HBQuickLaunchPage
 
 _log = logging.getLogger("hb_mp.rentals")
@@ -207,9 +209,15 @@ def _ensure_legacy_signing(
     *,
     configure,
 ) -> None:
-    """APW + Advance Days + signing toggles + one Clear Cache (legacy property)."""
+    """APW + Coverage Option Types off + Advance Days + signing + Clear Cache."""
     keys = _legacy_property_keys(environment_config)
     ensure_property_advanced_reservations(
+        hb_login_page,
+        environment_config,
+        app_config,
+        property_keys=keys,
+    )
+    ensure_coverage_option_types_off(
         hb_login_page,
         environment_config,
         app_config,
@@ -271,13 +279,19 @@ def ensure_two_step_superlease(
     app_config,
     two_step_property=None,
 ) -> None:
-    """Once: APW + Two-Step/Clickwrap/Super Lease + Advance Days + Clear Cache."""
+    """Once: APW + Coverage Option Types off + Two-Step signing + Clear Cache."""
     prop = two_step_property or environment_config.two_step_property
     if prop is None:
         raise ValueError(
             f"No two_step_property configured for {environment_config.name!r}"
         )
     ensure_property_advanced_reservations(
+        hb_login_page,
+        environment_config,
+        app_config,
+        property_keys=[prop.key],
+    )
+    ensure_coverage_option_types_off(
         hb_login_page,
         environment_config,
         app_config,
@@ -375,6 +389,151 @@ def ensure_property_advanced_reservations(
     return acted
 
 
+_COVERAGE_SPACE_TYPES = ("Storage", "Parking")
+
+
+def ensure_coverage_option_types_off(
+    hb_login_page: HBLoginPage,
+    environment_config,
+    app_config,
+    *,
+    property_keys: Iterable[str] | None = None,
+) -> bool:
+    """Manage Coverage: Coverage Option Types off, Use Corporate Default unchecked.
+
+    Corporate Settings is company-wide, so the switch is turned off once per
+    space type. Each property then clears Use Corporate Default and turns its
+    own switch off. Same property list as the APW precondition.
+    """
+    if property_keys is not None:
+        keys = list(dict.fromkeys(key for key in property_keys if key))
+    else:
+        keys = rental_property_keys(app_config, environment_config.name)
+    if not keys:
+        _log.info(
+            "Skip Coverage Option Types ensure: no properties for %s",
+            environment_config.name,
+        )
+        return False
+
+    timeout = app_config.getint("browser", "timeout")
+    hb_login_page.ensure_on_dashboard()
+    page = hb_login_page.page
+    nav = HBSettingsNavigation(page, timeout)
+    coverage = HBCoveragePage(page, timeout, nav)
+
+    coverage.open_coverage()
+    corporate_on = coverage._coverage_tab_visible("Corporate Settings")
+    property_on = coverage._coverage_tab_visible("Property Settings")
+    if not corporate_on and not property_on:
+        _log.info(
+            "Manage Coverage Corporate Settings and Property Settings "
+            "are not available; skipped"
+        )
+
+    if corporate_on and coverage.open_corporate_settings():
+        try:
+            coverage.page.get_by_text(
+                re.compile(r"^Coverage Option Types$", re.I)
+            ).first.wait_for(state="visible", timeout=8_000)
+        except Exception:
+            _log.info(
+                "Coverage Option Types row not visible after Corporate Settings"
+            )
+        if not coverage.coverage_option_types_row_visible():
+            coverage.open_settings_rail(reopen=False)
+        for space in _COVERAGE_SPACE_TYPES:
+            if not coverage.select_space_category(space, scope="current"):
+                _log.info(
+                    "Coverage space type %s is not on Corporate Settings", space
+                )
+                continue
+            off = coverage.disable_coverage_option_types(scope="current")
+            _log.info(
+                "Coverage Option Types corporate %s: %s",
+                space,
+                "ensured OFF" if off else "still on",
+            )
+    elif not corporate_on:
+        _log.info("Manage Coverage Corporate Settings is not available; skipped")
+
+    acted = False
+    if not property_on:
+        _log.info("Manage Coverage Property Settings is not available; skipped")
+    for key in keys if property_on else []:
+        prop = load_property(app_config, environment_config.name, key)
+        aliases: list[str] = []
+        for cand in (
+            prop.lease_configuration_property_name,
+            prop.hb_property_name,
+            prop.fms_property_name,
+        ):
+            name = (cand or "").strip()
+            if name and name.casefold() not in {a.casefold() for a in aliases}:
+                aliases.append(name)
+        if not aliases:
+            _log.info("Skip Coverage Option Types for %s: no property name", key)
+            continue
+        matched = None
+        for alias in aliases:
+            if coverage.select_coverage_property(alias):
+                matched = alias
+                break
+        if not matched:
+            _log.info(
+                "Skip Coverage Option Types for %s: %s not in Select Property",
+                key,
+                aliases,
+            )
+            continue
+        for space in _COVERAGE_SPACE_TYPES:
+            if not coverage.select_space_category(space, scope="property"):
+                _log.info(
+                    "Coverage space type %s is not on %s", space, matched
+                )
+                continue
+            coverage.uncheck_use_corporate_default()
+            off = coverage.disable_coverage_option_types(scope="current")
+            _log.info(
+                "Coverage Option Types %s / %s (%s): Use Corporate Default "
+                "unchecked, toggle %s",
+                key,
+                space,
+                matched,
+                "ensured OFF" if off else "still on",
+            )
+            acted = True
+
+    for key in keys:
+        prop = load_property(app_config, environment_config.name, key)
+        unit_names = [
+            name
+            for name in (
+                prop.hb_property_name,
+                prop.fms_property_name,
+                prop.lease_configuration_property_name,
+            )
+            if name
+        ]
+        if not unit_names:
+            _log.info("Skip Refresh Units for %s: no property name", key)
+            continue
+        refreshed = nav.refresh_website_units(unit_names)
+        _log.info(
+            "Refresh Units for %s (%s): %s",
+            key,
+            unit_names[0],
+            "done" if refreshed else "skipped",
+        )
+
+    nav.close_settings_panel()
+    page.goto(
+        environment_config.hb_base_url.rstrip("/") + "/dashboard",
+        wait_until="domcontentloaded",
+    )
+    return acted
+
+
 # Back-compat alias for older imports.
 disable_property_advanced_reservations_overrides = (
     ensure_property_advanced_reservations
@@ -458,7 +617,7 @@ def ensure_scoped_rental_preconditions(
     *,
     close_settings: bool = True,
 ) -> bool:
-    """APW Advanced Reservations + Advance Reservation Days for this module.
+    """APW + Coverage Option Types off + Advance Reservation Days for this module.
 
     Returns True if a days Save ran (caller should Clear Cache). Used by
     signing fixtures so one module test file gets one precondition package.
@@ -467,6 +626,12 @@ def ensure_scoped_rental_preconditions(
         request, app_config, environment_config.name
     )
     ensure_property_advanced_reservations(
+        hb_login_page,
+        environment_config,
+        app_config,
+        property_keys=keys,
+    )
+    ensure_coverage_option_types_off(
         hb_login_page,
         environment_config,
         app_config,

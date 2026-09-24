@@ -25,7 +25,7 @@ def test_rent_reserved_unit_with_autopay(
     app_config,
     mp_guest,
     two_step_property,
-    property_landing_page_url,
+    mp_property_landing_urls,
     hb_admin_session,
     test_data,
 ) -> None:
@@ -33,9 +33,7 @@ def test_rent_reserved_unit_with_autopay(
     # of the environment's Two-Step property (properties.ini
     # `two_step_property`). Walked live 2026-09-13 on uat_storoutlet/Chula
     # Vista. Each run creates a tenant and a sandbox card charge there.
-    property_url = property_landing_page_url(
-        environment_config.mp_base_url, two_step_property.mp_state, two_step_property.mp_city
-    )
+    property_url = mp_property_landing_urls["two_step"]
     rental_data = test_data("mp_rental")
     enroll_autopay = rental_data.get("enroll_autopay", True)
     guest_name = f"{mp_guest['first_name']} {mp_guest['last_name']}"
