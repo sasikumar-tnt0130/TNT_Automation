@@ -190,13 +190,11 @@ class TestTwoStepAdvanceReservation:
         app_config,
         mp_guest,
         two_step_property,
-        property_landing_page_url,
+        mp_property_landing_urls,
         hb_admin_session,
     ) -> None:
         two_step = two_step_property
-        property_url = property_landing_page_url(
-            environment_config.mp_base_url, two_step.mp_state, two_step.mp_city
-        )
+        property_url = mp_property_landing_urls["two_step"]
         days = _advance_days(two_step.advance_reservation_days)
         reservation = MPTwoStepReservationSetup(
             page,
@@ -235,13 +233,11 @@ class TestTwoStepAdvanceReservation:
         app_config,
         mp_guest,
         two_step_property,
-        property_landing_page_url,
+        mp_property_landing_urls,
         hb_admin_session,
     ) -> None:
         two_step = two_step_property
-        property_url = property_landing_page_url(
-            environment_config.mp_base_url, two_step.mp_state, two_step.mp_city
-        )
+        property_url = mp_property_landing_urls["two_step"]
         days = _advance_days(two_step.advance_reservation_days)
         business_name = f"{mp_guest['first_name']} {mp_guest['last_name']} Business"
         reservation = MPTwoStepReservationSetup(

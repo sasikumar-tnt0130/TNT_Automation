@@ -499,6 +499,33 @@ class MPTwoStepReservationFormPage:
         value = float(re.sub(r"[^\d.]", "", text) or 0)
         return -value if "-" in text else value
 
+    @staticmethod
+    def _reassign_coverage_premium(charges: dict[str, float]) -> dict[str, float]:
+        """Phone Lease Summary puts the coverage limit in front of the premium.
+
+        Bellflower mobile (2026-09-23): the visible block reads
+        "Coverage $2000" then "5.33" then "Total Tax $0.00". The text
+        parser takes the first dollar amount, so Coverage becomes 2000
+        and the premium sticks to the next label ("5.33 Total Tax" = 0).
+        The premium is the charge; $2000 is the limit. Total Cost to
+        Move-in on that run was 183.33.
+        """
+        items = list(charges.items())
+        repaired: list[tuple[str, float]] = []
+        for label, amount in items:
+            premium = re.match(r"^(\d+\.\d{2})\s+(.+)$", label)
+            if (
+                premium
+                and repaired
+                and re.search(r"coverage", repaired[-1][0], re.I)
+                and repaired[-1][1] >= 100
+            ):
+                repaired[-1] = (repaired[-1][0], float(premium.group(1)))
+                repaired.append((premium.group(2), amount))
+                continue
+            repaired.append((label, amount))
+        return dict(repaired)
+
     _SIDEBAR_SUMMARY = """box => ({
         text: box.innerText,
         space: (box.querySelector('.unit-size') || {}).innerText || '',
@@ -623,6 +650,7 @@ class MPTwoStepReservationFormPage:
             row_text = re.sub(r"\s+", " ", row_text).strip()
             amount_text = re.sub(r"\s+", " ", amount_text).strip()
             charges[row_text.replace(amount_text, "").strip()] = self._money(amount_text)
+        charges = self._reassign_coverage_premium(charges)
         # Confirmed live (2026-09-13, stage/Rutland): a property that signs
         # the lease before payment ends the form with "Sign Agreements"
         # instead, with no amount on it - pay_now is None there.
@@ -785,6 +813,42 @@ class MPTwoStepReservationFormPage:
         fill_business_representative(self.page, self.timeout, guest, rental_data)
 
     @log_method_exceptions
+    def _select_first_coverage(self) -> None:
+        """Select the first coverage option when the form offers one.
+
+        Coverage Option Types off means the radios are absent or hidden.
+        That rental continues without a plan. When they are on screen and
+        none is selected, the first one is ticked (Bellflower: Coverage
+        $2000)."""
+        coverage = self.page.locator('input[id^="coverageAmount-ins"]')
+        offered = []
+        for index in range(coverage.count()):
+            radio = coverage.nth(index)
+            radio_id = radio.get_attribute("id")
+            if not radio_id:
+                continue
+            label = self.page.locator(f'label[for="{radio_id}"]')
+            label_visible = label.count() > 0 and label.first.is_visible()
+            try:
+                input_visible = radio.is_visible()
+            except Exception:
+                input_visible = False
+            if label_visible or input_visible:
+                offered.append(radio)
+        if not offered:
+            allure.attach(
+                "Coverage is not on this rental form; skipped",
+                name="coverage",
+                attachment_type=allure.attachment_type.TEXT,
+            )
+            return
+        if any(radio.is_checked() for radio in offered):
+            return
+        radio_id = offered[0].get_attribute("id")
+        if radio_id:
+            self._check_radio(radio_id)
+
+    @log_method_exceptions
     def _check_radio(self, radio_id: str) -> None:
         """Custom-styled radios (native input behind a span) — same approach
         as MPLegacyReservationFormPage._check_radio."""
@@ -934,13 +998,7 @@ class MPTwoStepReservationFormPage:
                 if not no_radio.first.is_checked():
                     self._check_radio(no_id)
 
-            # Protection plan if offered and nothing selected yet.
-            coverage = self.page.locator('input[id^="coverageAmount-ins"]')
-            if coverage.count() > 0 and not any(
-                coverage.nth(i).is_checked() for i in range(coverage.count())
-            ):
-                self._check_radio(coverage.first.get_attribute("id"))
-                expect(coverage.first).to_be_checked(timeout=self.timeout)
+            self._select_first_coverage()
 
     @log_method_exceptions
     def pay_rental_by_ach(

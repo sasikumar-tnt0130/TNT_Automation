@@ -192,7 +192,7 @@ class TestTwoStepLayoutCombinations:
         environment_config,
         app_config,
         two_step_property,
-        property_landing_page_url,
+        mp_property_landing_urls,
         request,
     ) -> None:
         lease_configuration = _lease_setup(
@@ -203,11 +203,7 @@ class TestTwoStepLayoutCombinations:
         )
         # lease_configuration.flush_website_cache()
 
-        property_url = property_landing_page_url(
-            environment_config.mp_base_url,
-            two_step_property.mp_state,
-            two_step_property.mp_city,
-        )
+        property_url = mp_property_landing_urls["two_step"]
         timeout = app_config.getint("browser", "timeout")
         rental_page = MPUnitSearchPage(
             mobile_page, environment_config.mp_base_url, timeout

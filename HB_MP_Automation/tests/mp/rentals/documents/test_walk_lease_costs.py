@@ -71,7 +71,7 @@ class TestWalkLeaseCostSources:
         environment_config,
         app_config,
         mp_guest,
-        property_landing_page_url,
+        mp_property_landing_urls,
         hb_admin_session,
         test_data,
         move_out_after_rental,
@@ -81,9 +81,9 @@ class TestWalkLeaseCostSources:
             pytest.skip(f"No legacy_property for {environment}")
         prop = load_property(app_config, environment, property_key)
         timeout = app_config.getint("browser", "timeout")
-        property_url = property_landing_page_url(
-            environment_config.mp_base_url, prop.mp_state, prop.mp_city
-        )
+        property_url = mp_property_landing_urls["legacy"]
+        if not property_url:
+            pytest.skip("No legacy storefront landing URL configured")
         rental_data = test_data("mp_rental")
         extras = rental_extras(rental_data, coverage=True)
         guest_name = f"{mp_guest['first_name']} {mp_guest['last_name']}"

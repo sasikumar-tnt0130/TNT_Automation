@@ -27,7 +27,7 @@ def test_cancel_storefront_reservation_from_lead(
     app_config,
     mp_guest,
     two_step_property,
-    property_landing_page_url,
+    mp_property_landing_urls,
     hb_admin_session,
 ) -> None:
     # Old Robot Mariposa ReservationAndRentals: "Reserve a Space in
@@ -35,9 +35,7 @@ def test_cancel_storefront_reservation_from_lead(
     # lead that holds a reservation (confirmed live 2026-09-13, Chula Vista)
     # - it only offers "Cancel Reservation", so that's what's checked (user
     # choice). Runs on the environment's Two-Step property.
-    property_url = property_landing_page_url(
-        environment_config.mp_base_url, two_step_property.mp_state, two_step_property.mp_city
-    )
+    property_url = mp_property_landing_urls["two_step"]
     timeout = app_config.getint("browser", "timeout")
     reservation = MPTwoStepReservationSetup(
         page,

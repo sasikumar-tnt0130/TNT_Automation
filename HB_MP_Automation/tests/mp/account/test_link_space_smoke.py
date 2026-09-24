@@ -26,7 +26,7 @@ def test_link_rented_space_to_online_account(
     mp_guest,
     mp_second_guest,
     two_step_property,
-    property_landing_page_url,
+    mp_property_landing_urls,
     hb_admin_session,
     test_data,
 ) -> None:
@@ -37,7 +37,7 @@ def test_link_rented_space_to_online_account(
     # uat_storoutlet/Chula Vista. Each run creates two tenants, one online
     # account and two sandbox card charges.
     state, city = two_step_property.mp_state, two_step_property.mp_city
-    property_url = property_landing_page_url(environment_config.mp_base_url, state, city)
+    property_url = mp_property_landing_urls["two_step"]
     rental_data = test_data("mp_rental")
     rental = MPTwoStepReservationSetup(
         page,

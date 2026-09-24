@@ -211,27 +211,19 @@ class MPUnitSearchPage:
         poll_timeout_ms = 2000
         while True:
             self._dismiss_banners()
-            remaining_ms = (deadline - time.monotonic()) * 1000
-            if remaining_ms <= 0:
-                expect(wait_locator).to_be_visible(timeout=1)
+            # Any visible match counts. A hidden desktop duplicate earlier
+            # in the DOM must not block the click or hide the phone control.
+            if self._any_visible(wait_locator):
                 return
-            if wait_locator.count() == 0:
-                # Bounded so a click that never resolves/registers can't
-                # swallow the entire remaining budget in one attempt -
-                # leaves room to actually retry within the deadline.
-                try:
-                    click_locator.click(timeout=min(poll_timeout_ms, remaining_ms))
-                except Exception:
-                    pass
             remaining_ms = (deadline - time.monotonic()) * 1000
             if remaining_ms <= 0:
-                expect(wait_locator).to_be_visible(timeout=1)
+                expect(wait_locator.first).to_be_visible(timeout=1)
                 return
             try:
-                expect(wait_locator).to_be_visible(timeout=min(poll_timeout_ms, remaining_ms))
-                return
-            except AssertionError:
-                continue
+                click_locator.click(timeout=min(poll_timeout_ms, remaining_ms))
+            except Exception:
+                pass
+            self.page.wait_for_timeout(min(500, max(remaining_ms, 0)))
 
     @log_method_exceptions
     def search_storage_location(self, state: str, city: str) -> None:
@@ -489,6 +481,49 @@ class MPUnitSearchPage:
             .or_(self.page.get_by_role("button", name="Submit", exact=True))
         )
 
+    def _any_visible(self, locator) -> bool:
+        """True when any match is visible. `.first` is often a CSS-hidden
+        desktop duplicate that sits earlier in the DOM than the phone copy."""
+        for index in range(locator.count()):
+            try:
+                if locator.nth(index).is_visible():
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _on_two_step_rent_url(self) -> bool:
+        """Direct Two-Step move-in route.
+
+        Bellflower mobile (2026-09-23) lands on
+        `/storage-units/.../rent/<space>/v1/`, not `/rent_or_reserve/`.
+        """
+        return re.search(r"/rent/[^/?#]+", self.page.url) is not None
+
+    def _two_step_rental_form_open(self) -> bool:
+        """Two-Step unit form after a successful Select.
+
+        Bellflower mobile (390px, 2026-09-23) shows Rent Now as the button
+        and Reserve Now as a link, with Email / Mobile already on the page.
+        A button named Reserve Now is not on that form, so the button-only
+        CTA above stays hidden even though the unit was selected. The phone
+        DOM also keeps a hidden desktop copy of those controls first, so
+        `.first.is_visible()` misses the one on screen."""
+        if self._on_two_step_rent_url():
+            return True
+        rent_now = self.page.get_by_role(
+            "button", name="Rent Now", exact=True
+        ).or_(self.page.get_by_role("link", name="Rent Now", exact=True))
+        email = self.page.get_by_role(
+            "textbox", name=re.compile(r"^Email", re.I)
+        )
+        move_in_cost = self.page.get_by_text(
+            re.compile(r"Total Cost to Move-in", re.I)
+        )
+        return self._any_visible(rent_now) and (
+            self._any_visible(email) or self._any_visible(move_in_cost)
+        )
+
     def _space_no_longer_available(self):
         """Waitlist / hold-lost page heading (Default Select often lands here)."""
         return self.page.get_by_role(
@@ -552,8 +587,9 @@ class MPUnitSearchPage:
         renders Lease Summary beside the gone-space heading."""
         if self._space_no_longer_available().count() and self._space_no_longer_available().first.is_visible():
             return False
-        cta = self._reservation_form_cta()
-        return bool(cta.count() and cta.first.is_visible())
+        if self._two_step_rental_form_open():
+            return True
+        return self._any_visible(self._reservation_form_cta())
 
     @log_method_exceptions
     def _unit_selection_succeeded(self, select_button) -> bool:
@@ -601,7 +637,9 @@ class MPUnitSearchPage:
                 .or_(lease_summary)
                 .or_(space_gone)
                 .or_(reserve_cta)
-                .first,
+                .or_(self.page.get_by_text(
+                    re.compile(r"Total Cost to Move-in|Holding Space For", re.I)
+                )),
             )
         except AssertionError:
             # Confirmed live (2026-09-15, stage/Garden Grove): the Select
@@ -613,6 +651,8 @@ class MPUnitSearchPage:
                 return self._recover_from_space_no_longer_available()
             if self._reservation_form_ready():
                 return True
+            if self._on_two_step_rent_url():
+                return True
             allure.attach(
                 self.page.screenshot(full_page=True),
                 name="Select stuck loading - trying the next unit",
@@ -623,8 +663,11 @@ class MPUnitSearchPage:
 
         # Default Select race: /rent_or_reserve/ + Lease Summary can paint
         # before the Space No Longer Available heading - brief settle.
-        if "/rent_or_reserve/" in self.page.url or (
-            lease_summary.count() and lease_summary.first.is_visible()
+        # Mobile Two-Step uses /rent/<space>/ instead (Bellflower, 2026-09-23).
+        if (
+            "/rent_or_reserve/" in self.page.url
+            or self._on_two_step_rent_url()
+            or self._any_visible(lease_summary)
         ):
             self.page.wait_for_timeout(750)
             if space_gone.count() and space_gone.first.is_visible():

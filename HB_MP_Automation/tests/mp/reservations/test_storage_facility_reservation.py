@@ -67,15 +67,13 @@ def test_show_reservation_code_and_email_two_step(
     app_config,
     mp_guest,
     two_step_property,
-    property_landing_page_url,
+    mp_property_landing_urls,
     hb_admin_session,
 ) -> None:
     # Same 8884/10603 checks against the environment's Two-Step property
     # (properties.ini `two_step_property`). Precondition matches rentals:
     # two_step_superlease_checked (APW + CW/SL/Two-Step + days + Clear Cache).
-    property_url = property_landing_page_url(
-        environment_config.mp_base_url, two_step_property.mp_state, two_step_property.mp_city
-    )
+    property_url = mp_property_landing_urls["two_step"]
     timeout = app_config.getint("browser", "timeout")
     reservation = MPTwoStepReservationSetup(
         page,

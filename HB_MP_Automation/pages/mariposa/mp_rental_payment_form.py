@@ -156,6 +156,26 @@ def ensure_payment_method_offered(page: Page, timeout: float, method: str, form_
     )
 
 
+def _field_below_heading(page: Page, heading: Locator, role: str, name: str):
+    """First visible field of this name at or below the heading.
+
+    The rental form repeats First Name / Last Name in other blocks. A filled
+    Last Name above Business Representative Information must not count as the
+    representative's last name."""
+    box = heading.bounding_box()
+    top = box["y"] if box else 0
+    fields = page.get_by_role(role, name=name, exact=True)
+    for index in range(fields.count()):
+        field = fields.nth(index)
+        if not field.is_visible():
+            continue
+        field_box = field.bounding_box()
+        if field_box is not None and field_box["y"] + 4 < top:
+            continue
+        return field
+    return None
+
+
 def fill_business_representative(page: Page, timeout: float, guest: dict, rental_data: dict) -> None:
     """Renting as a business only: the reservation collects just Business
     Name/Phone/Email, so the rental form's "Business Representative
@@ -165,11 +185,13 @@ def fill_business_representative(page: Page, timeout: float, guest: dict, rental
     repeat other blocks' (alternate contact, address), so each field is the
     first empty, visible one of its name. The representative is the renter -
     the guest's Gmail address and fictional (714) 555-01xx mobile. No-op
-    when the block isn't shown. Fields already filled are left alone.
+    when the block isn't shown. First and Last Name under that heading are
+    set to the guest even when another block already has a last name.
     """
     heading = page.get_by_role("heading", name="Business Representative Information")
     if heading.count() == 0 or not heading.first.is_visible():
         return
+    heading.first.scroll_into_view_if_needed()
 
     def first_empty(role: str, name: str):
         fields = page.get_by_role(role, name=name, exact=True)
@@ -217,8 +239,19 @@ def fill_business_representative(page: Page, timeout: float, guest: dict, rental
                     mobile.fill(guest["mobile"])
             except PlaywrightTimeoutError:
                 mobile.fill(guest["mobile"])
-        fill("First Name *", guest["first_name"])
-        fill("Last Name *", guest["last_name"])
+        # Name fields under this heading, not a filled Last Name elsewhere
+        # on the form. Bellflower stored Tenant Name "Auto" when the
+        # representative last name never landed (2026-09-23, space 0024C).
+        for label, value in (
+            ("First Name *", guest["first_name"]),
+            ("Last Name *", guest["last_name"]),
+        ):
+            field = _field_below_heading(page, heading.first, "textbox", label)
+            if field is not None:
+                if (field.input_value() or "").strip() != value:
+                    field.fill(value)
+            else:
+                fill(label, value)
         # The address fields are the Legacy block's; filled where present.
         fill("Address1 *", rental_data["address1"], required=False)
         fill("Address2", rental_data["address2"], required=False)

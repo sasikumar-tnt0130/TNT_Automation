@@ -481,3 +481,184 @@ class HBSettingsNavigation:
                         raise
             if last_error is not None:
                 raise last_error
+
+    @log_method_exceptions
+    def refresh_website_units(self, property_name: str | list[str]) -> bool:
+        """Website Settings → Unit Information: select the property and Refresh Units.
+
+        ``property_name`` may be several aliases. The combobox shows a
+        facility line such as ``f001 - Rutland - 213 Barre Paxton Rd``, which
+        contains the HB name and not the lease name. Returns False when
+        Unit Information is not in the Settings menu.
+        """
+        names = (
+            [property_name]
+            if isinstance(property_name, str)
+            else [name for name in property_name if name]
+        )
+        label = names[0] if names else "property"
+        with allure.step(f"Unit Information → Refresh Units ({label})"):
+            self.open_settings_panel()
+            menu = self.page.locator(
+                ".setting-menu-list-inactive-color, "
+                ".setting-menu-list-active-color"
+            ).filter(has_text=re.compile(r"^\s*Unit Information\s*$"))
+            if menu.count() == 0 or not menu.first.is_visible():
+                try:
+                    self.switch_app_filter_to_website()
+                except Exception:
+                    pass
+                menu = self.page.locator(
+                    ".setting-menu-list-inactive-color, "
+                    ".setting-menu-list-active-color"
+                ).filter(has_text=re.compile(r"^\s*Unit Information\s*$"))
+            if menu.count() == 0:
+                allure.attach(
+                    "Unit Information is not in Settings; skipped",
+                    name="refresh-units-skipped",
+                    attachment_type=allure.attachment_type.TEXT,
+                )
+                return False
+            menu.first.click()
+            refresh = self.page.get_by_role(
+                "button", name="Refresh Units", exact=True
+            )
+            try:
+                expect(refresh).to_be_visible(timeout=waits().medium)
+            except AssertionError:
+                allure.attach(
+                    "Refresh Units button is not available; skipped",
+                    name="refresh-units-skipped",
+                    attachment_type=allure.attachment_type.TEXT,
+                )
+                return False
+            self._select_unit_information_property(names)
+            try:
+                expect(refresh).not_to_have_class(
+                    re.compile(r"v-btn--loading"), timeout=waits().short
+                )
+            except AssertionError:
+                pass
+            try:
+                refresh.click(timeout=waits().medium)
+            except PlaywrightTimeoutError:
+                refresh.click(force=True)
+            try:
+                expect(refresh).not_to_have_class(
+                    re.compile(r"v-btn--loading"), timeout=waits().medium
+                )
+            except AssertionError:
+                pass
+            return True
+
+    def _select_unit_information_property(self, property_names: list[str]) -> None:
+        """Select the Unit Information property when none of the aliases is already shown."""
+        names = [name.strip() for name in property_names if name and name.strip()]
+        if not names:
+            return
+        dialog = self.page.locator(
+            ".hb-settings-fullscreen.v-dialog--active, .v-dialog__content--active"
+        ).last
+        picker = dialog.get_by_role(
+            "textbox", name=re.compile(r"Select Property", re.I)
+        )
+        chosen = None
+        if picker.count():
+            try:
+                if picker.first.is_visible():
+                    chosen = picker.first
+            except Exception:
+                chosen = None
+        if chosen is None:
+            inputs = dialog.locator("input")
+            for index in range(inputs.count()):
+                field = inputs.nth(index)
+                try:
+                    if not field.is_visible():
+                        continue
+                except Exception:
+                    continue
+                label = " ".join(
+                    part
+                    for part in (
+                        field.get_attribute("aria-label"),
+                        field.get_attribute("placeholder"),
+                        field.get_attribute("name"),
+                    )
+                    if part
+                )
+                if re.search(r"filter|search", label, re.I):
+                    continue
+                chosen = field
+                if re.search(r"property", label, re.I):
+                    break
+        if chosen is None:
+            return
+        try:
+            current = (chosen.input_value() or "").strip()
+        except Exception:
+            current = ""
+        if current and any(name.casefold() in current.casefold() for name in names):
+            return
+        chosen.click()
+        option = None
+        for name in names:
+            cand = self.page.get_by_role("option").filter(
+                has_text=re.compile(re.escape(name), re.I)
+            )
+            try:
+                if cand.count() and cand.first.is_visible():
+                    option = cand.first
+                    break
+            except Exception:
+                continue
+        if option is None:
+            try:
+                chosen.click()
+            except Exception:
+                pass
+            return
+        option.click()
+        """Pick the Unit Information property combobox when it is not already this property."""
+        picker = self.page.get_by_role(
+            "textbox", name="Select Property", exact=True
+        )
+        chosen = None
+        if picker.count() and picker.first.is_visible():
+            chosen = picker.first
+        if chosen is None:
+            inputs = self.page.locator(".v-dialog__content--active input")
+            for index in range(inputs.count()):
+                field = inputs.nth(index)
+                try:
+                    if not field.is_visible():
+                        continue
+                except Exception:
+                    continue
+                label = " ".join(
+                    part
+                    for part in (
+                        field.get_attribute("aria-label"),
+                        field.get_attribute("placeholder"),
+                        field.get_attribute("name"),
+                    )
+                    if part
+                )
+                if re.search(r"filter|search", label, re.I):
+                    continue
+                chosen = field
+                if re.search(r"property", label, re.I):
+                    break
+        if chosen is None:
+            return
+        try:
+            current = (chosen.input_value() or "").strip()
+        except Exception:
+            current = ""
+        if current and property_name.casefold() in current.casefold():
+            return
+        chosen.click()
+        name_re = re.compile(rf".*{re.escape(property_name)}.*", re.I)
+        option = self.page.get_by_role("option").filter(has_text=name_re)
+        expect(option.first).to_be_visible(timeout=waits().medium)
+        option.first.click()

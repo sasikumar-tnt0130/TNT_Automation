@@ -54,13 +54,9 @@ class TestTwoStepReservation:
         app_config,
         mp_guest,
         two_step_property,
-        property_landing_page_url,
+        mp_property_landing_urls,
     ) -> None:
-        property_url = property_landing_page_url(
-            environment_config.mp_base_url,
-            two_step_property.mp_state,
-            two_step_property.mp_city,
-        )
+        property_url = mp_property_landing_urls["two_step"]
         reservation = MPTwoStepReservationSetup(
             mobile_page,
             environment_config,
@@ -98,13 +94,9 @@ class TestTwoStepReservation:
         app_config,
         mp_guest,
         two_step_property,
-        property_landing_page_url,
+        mp_property_landing_urls,
     ) -> None:
-        property_url = property_landing_page_url(
-            environment_config.mp_base_url,
-            two_step_property.mp_state,
-            two_step_property.mp_city,
-        )
+        property_url = mp_property_landing_urls["two_step"]
         reservation = MPTwoStepReservationSetup(
             mobile_page,
             environment_config,
